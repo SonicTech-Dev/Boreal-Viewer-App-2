@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>MQTT Live View — LoS Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root{
+      --bg:#0f1724;
+      --card:#0b1220;
+      --muted:#9aa6b2;
+      --accent:#06b6d4;
+      --accent-2:#60a5fa;
+      --tile-bg: linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      --glass: rgba(255,255,255,0.03);
+      --success: #10b981;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      background: linear-gradient(180deg,#071028 0%, #071426 60%);
+      color:#e6eef6;
+      -webkit-font-smoothing:antialiased;
+      -moz-osx-font-smoothing:grayscale;
+      padding:24px;
+    }
+    header{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:18px;
+      margin-bottom:18px;
+    }
+    .title {
+      display:flex;
+      gap:12px;
+      align-items:center;
+    }
+    h1{font-size:20px;margin:0;font-weight:600}
+    .sub { color:var(--muted); font-size:13px; margin-top:4px; }
+    #status { font-weight:700; }
+    #status.connected { color:var(--success); }
+    #status.disconnected { color:#f97316; }
+
+    main {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap:20px;
+      align-items:start;
+    }
+
+    /* Left: tiles grid */
+    .tiles {
+      display:grid;
+      grid-template-columns: repeat(auto-fill,minmax(160px,1fr));
+      gap:14px;
+    }
+
+    .tile {
+      background: var(--card);
+      border-radius:12px;
+      padding:14px;
+      box-shadow: 0 6px 18px rgba(2,6,23,0.6), inset 0 1px 0 rgba(255,255,255,0.02);
+      min-height:96px;
+      display:flex;
+      flex-direction:column;
+      justify-content:space-between;
+      transition: transform .12s ease, box-shadow .12s ease;
+      border: 1px solid rgba(255,255,255,0.03);
+    }
+    .tile:hover { transform: translateY(-4px); box-shadow: 0 12px 30px rgba(2,6,23,0.7); }
+
+    .tile .label { color:var(--muted); font-size:13px; }
+    .tile .value { font-size:28px; font-weight:700; margin-top:6px; color:#e6eef6; }
+
+    .small { font-size:12px; color:var(--muted); margin-top:6px; }
+
+    /* Right: details & feed */
+    .panel {
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      border-radius:12px;
+      padding:12px;
+      min-height:200px;
+      border:1px solid rgba(255,255,255,0.03);
+    }
+    .meta { font-size:13px; color:var(--muted); margin-bottom:8px; }
+    .feed {
+      max-height:420px;
+      overflow:auto;
+      display:flex;
+      flex-direction:column-reverse;
+      gap:8px;
+    }
+    .feed-item {
+      background: rgba(255,255,255,0.02);
+      padding:8px;
+      border-radius:8px;
+      font-family: monospace;
+      font-size:13px;
+      color:#dff6fb;
+      border:1px solid rgba(255,255,255,0.02);
+    }
+
+    /* responsive */
+    @media (max-width:980px){
+      main { grid-template-columns: 1fr; }
+      .panel { order: 2; }
+    }
+
+    /* tiny helper styles for positive/negative values (if needed) */
+    .trend-up { color: #34d399; }
+    .trend-down { color: #fb7185; }
+
+    /* empty state */
+    .empty { color:var(--muted); padding:20px; border-radius:8px; background:rgba(255,255,255,0.01); text-align:center; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="title">
+      <div>
+        <h1>LoS — Live Dashboard</h1>
+        <div class="sub">Showing LoS metrics only — live updates from your MQTT topic</div>
+      </div>
+    </div>
+
+    <div style="text-align:right">
+      <div class="meta">Broker status</div>
+      <div id="status" class="disconnected">Connecting…</div>
+      <div class="meta" style="margin-top:8px">Topic: <code id="topic">(configured on server)</code></div>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <div class="tiles" id="tiles">
+        <!-- Tiles are inserted here by client.js -->
+      </div>
+    </section>
+
+    <aside>
+      <div class="panel">
+        <div class="meta">Latest LoS messages (newest on top)</div>
+        <div class="feed" id="feed">
+          <div class="empty" id="feed-empty">No LoS messages yet</div>
+        </div>
+      </div>
+
+      <div style="height:12px"></div>
+
+      <div class="panel" style="display:flex;flex-direction:column;gap:8px">
+        <div class="meta">Controls</div>
+        <div style="display:flex;gap:8px">
+          <button id="clear-feed" style="flex:1;padding:8px;border-radius:8px;border:0;background:var(--accent);color:#042;cursor:pointer">Clear Feed</button>
+          <button id="reset-tiles" style="flex:1;padding:8px;border-radius:8px;border:0;background:var(--accent-2);color:#042;cursor:pointer">Reset Values</button>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/client.js"></script>
+</body>
+</html>

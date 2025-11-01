@@ -24,22 +24,47 @@
     header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
     h1{font-size:18px;margin:0}
     .sub{color:var(--muted); font-size:13px}
-    main{display:grid;grid-template-columns:1fr 380px;gap:16px}
+    main{display:grid;grid-template-columns:1fr 420px;gap:16px}
     .panel{background:var(--card);padding:12px;border-radius:10px;border:1px solid rgba(255,255,255,0.03)}
     .controls{display:flex;flex-direction:column;gap:8px}
     .row{display:flex;gap:8px;align-items:center}
     input[type="datetime-local"]{padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
     button{padding:8px 10px;border-radius:8px;border:0;background:var(--accent);color:#042;cursor:pointer}
+    button.secondary{background:var(--accent-2)}
     .quick{display:flex;gap:8px}
     .table{width:100%;border-collapse:collapse;font-family:monospace}
     .table th, .table td{padding:8px;border-bottom:1px solid rgba(255,255,255,0.02);text-align:left}
     .nowrap{white-space:nowrap}
     .feed{max-height:420px;overflow:auto}
     .tiles {display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
-    .tile {background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));padding:12px;border-radius:10px;border:1px solid rgba(255,255,255,0.03)}
+    .tile {
+      background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      padding:12px;border-radius:10px;border:1px solid rgba(255,255,255,0.03);
+      position:relative; overflow:visible; cursor:default;
+      transition: transform .12s ease, box-shadow .12s ease;
+    }
+    .tile:hover { transform: translateY(-6px); box-shadow: 0 16px 30px rgba(2,6,23,0.7); }
     .tile .label{color:var(--muted);font-size:13px}
     .tile .value{font-weight:700;font-size:24px;margin-top:6px}
+    .tile .tiny { font-size:12px; color:var(--muted); margin-top:6px; }
+    /* popup card on hover */
+    .popup {
+      position:absolute;
+      top:8px; right:8px;
+      min-width:180px;
+      background:rgba(3,10,20,0.98);
+      border:1px solid rgba(255,255,255,0.04);
+      padding:10px;border-radius:8px;z-index:10;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.6);
+      display:none;
+      font-size:13px;
+    }
+    .tile:hover .popup { display:block; }
+    .popup .k { color:var(--muted); font-size:12px; }
+    .popup .v { font-weight:700; margin-top:6px; font-size:18px; }
     @media (max-width:980px){main{grid-template-columns:1fr}}
+    .controls-foot { display:flex; gap:8px; align-items:center; margin-top:8px }
+    .export-btn { background:#22c55e; color:#042; padding:8px 10px; border-radius:8px; cursor:pointer; border:0 }
   </style>
 </head>
 <body>
@@ -68,7 +93,7 @@
 
       <div style="height:12px"></div>
 
-      <div class="panel">
+      <div class="panel" id="query-panel">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <div class="sub">Query historical LoS readings (from los_data.recorded_at)</div>
           <div class="sub">Max 5000 rows</div>
@@ -88,12 +113,17 @@
             <button class="preset" data-range="6h">6h</button>
             <button class="preset" data-range="24h">24h</button>
             <button class="preset" data-range="7d">7d</button>
-            <button id="clear-results" style="background:#ef4444;color:white">Clear</button>
+            <button id="clear-results" class="secondary">Clear</button>
+          </div>
+
+          <div class="controls-foot">
+            <div class="sub">SQL Viewer (results below)</div>
+            <button id="export-csv" class="export-btn">Export CSV</button>
           </div>
 
           <div style="margin-top:8px">
             <div class="sub">Results</div>
-            <div class="feed" id="results">
+            <div class="feed" id="results" style="margin-top:8px">
               <div class="sub" id="results-empty">No results yet</div>
             </div>
           </div>

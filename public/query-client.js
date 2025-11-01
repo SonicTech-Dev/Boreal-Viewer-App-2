@@ -139,7 +139,7 @@
       const tr = document.createElement('tr');
       const tdTime = document.createElement('td');
       tdTime.className = 'nowrap';
-      tdTime.textContent = new Date(row.recorded_at).toLocaleString();
+      tdTime.textContent = row.recorded_at_str || row.recorded_at || '';
       tr.appendChild(tdTime);
 
       const addCell = (val) => {

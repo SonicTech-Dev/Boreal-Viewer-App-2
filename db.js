@@ -93,14 +93,17 @@ async function fetchLosData(from, to, limit = 500) {
   }
 
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  // inside fetchLosData replace the sql string with this:
   const sql = `
     SELECT id,
-           "LoS-Temp(c)" AS los_temp,
-           "LoS-Rx Light" AS los_rx_light,
-           "LoS- R2" AS los_r2,
-           "LoS-HeartBeat" AS los_heartbeat,
-           "LoS - PPM" AS los_ppm,
-           recorded_at
+          "LoS-Temp(c)" AS los_temp,
+          "LoS-Rx Light" AS los_rx_light,
+          "LoS- R2" AS los_r2,
+          "LoS-HeartBeat" AS los_heartbeat,
+          "LoS - PPM" AS los_ppm,
+          -- formatted recorded_at string in UAE (Asia/Dubai)
+          to_char(recorded_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Dubai', 'YYYY-MM-DD HH24:MI:SS') AS recorded_at_str,
+          recorded_at
     FROM los_data
     ${where}
     ORDER BY recorded_at DESC

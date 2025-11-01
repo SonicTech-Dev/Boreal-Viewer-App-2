@@ -1,14 +1,14 @@
-// client.js — live UI: receives mqtt_message, updates real-time tiles and feed.
-// Works with server that writes to los_data; extracts LoS keys from incoming payloads.
+// client.js — live UI: receives mqtt_message, updates real-time tiles with popup details and feed.
+// Full feature set restored: hover popups, real-time feed, status dot/label.
 
 (function () {
   const socket = io();
-  const statusEl = document.getElementById('status');
+  const statusDot = document.getElementById('status-dot');
+  const statusLabel = document.getElementById('status-label');
   const tilesContainer = document.getElementById('tiles');
   const feedEl = document.getElementById('feed');
-  const topicEl = document.getElementById('topic');
 
-  // Keys we care about (human-friendly labels mapped to DB column aliases)
+  // Tile key mappings and variants (keeps previous variants)
   const KEYS = [
     { keyVariants: ['LoS-Temp(c)'], label: 'LoS-Temp (°C)', apiField: 'los_temp' },
     { keyVariants: ['LoS-Rx Light'], label: 'LoS-Rx Light', apiField: 'los_rx_light' },
@@ -17,11 +17,11 @@
     { keyVariants: ['LoS - PPM', 'LoS- PPM', 'LoS-PPM'], label: 'LoS-PPM', apiField: 'los_ppm' }
   ];
 
-  // state: latest value per label
+  // Store latest values
   const latest = {};
-  KEYS.forEach(k => latest[k.label] = { value: null, updated_at: null });
+  KEYS.forEach(k => latest[k.label] = { value: null, updated_at: null, raw: null });
 
-  // create tiles initially
+  // Create tiles with popup for each metric
   function createTiles() {
     tilesContainer.innerHTML = '';
     KEYS.forEach(k => {
@@ -37,75 +37,79 @@
       value.className = 'value';
       value.textContent = '-';
 
-      const small = document.createElement('div');
-      small.className = 'sub';
-      small.style.marginTop = '6px';
-      small.style.fontSize = '12px';
-      small.style.color = 'var(--muted)';
-      small.textContent = '—';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = 'No data';
+
+      const popup = document.createElement('div');
+      popup.className = 'popup';
+      popup.id = 'popup-' + k.apiField;
+      popup.innerHTML = `
+        <div style="color:var(--muted);font-size:12px">Latest</div>
+        <div style="font-weight:700;font-size:18px" id="popup-val-${k.apiField}">-</div>
+        <div style="margin-top:6px;color:var(--muted);font-size:12px" id="popup-time-${k.apiField}">—</div>
+      `;
 
       tile.appendChild(label);
       tile.appendChild(value);
-      tile.appendChild(small);
+      tile.appendChild(meta);
+      tile.appendChild(popup);
 
       tilesContainer.appendChild(tile);
     });
   }
 
+  // Update tile values and popup times
   function updateTiles() {
     KEYS.forEach(k => {
       const info = latest[k.label];
       const tile = document.getElementById('tile-' + k.apiField);
       if (!tile) return;
       const valueEl = tile.querySelector('.value');
-      const smallEl = tile.querySelector('.sub');
+      const metaEl = tile.querySelector('.meta');
+      const popupVal = tile.querySelector('#popup-val-' + k.apiField);
+      const popupTime = tile.querySelector('#popup-time-' + k.apiField);
 
       if (info.value === null || info.value === undefined) {
         valueEl.textContent = '-';
-        smallEl.textContent = 'No data';
+        metaEl.textContent = 'No data';
+        if (popupVal) popupVal.textContent = '-';
+        if (popupTime) popupTime.textContent = '—';
       } else {
-        const v = (typeof info.value === 'number' && !Number.isInteger(info.value)) ? info.value.toFixed(2) : String(info.value);
-        valueEl.textContent = v;
-        smallEl.textContent = 'updated: ' + new Date(info.updated_at).toLocaleTimeString();
+        const display = (typeof info.value === 'number' && !Number.isInteger(info.value)) ? info.value.toFixed(2) : String(info.value);
+        valueEl.textContent = display;
+        metaEl.textContent = info.updated_at ? ('updated: ' + new Date(info.updated_at).toLocaleTimeString()) : 'No data';
+        if (popupVal) popupVal.textContent = display;
+        if (popupTime) popupTime.textContent = info.updated_at ? ('at ' + new Date(info.updated_at).toLocaleString()) : '—';
       }
     });
   }
 
-  // maintain small feed of messages
+  // Add item to debug feed (prepend)
   function addToFeed(msgText) {
     const item = document.createElement('div');
     item.className = 'feed-item';
-    item.style.padding = '8px';
-    item.style.marginBottom = '8px';
-    item.style.borderRadius = '6px';
-    item.style.background = 'rgba(255,255,255,0.02)';
-    item.style.fontFamily = 'monospace';
-    item.style.fontSize = '13px';
     item.textContent = msgText;
-    // prepend
     if (feedEl.firstChild) feedEl.insertBefore(item, feedEl.firstChild);
     else feedEl.appendChild(item);
-
     while (feedEl.childElementCount > 200) feedEl.removeChild(feedEl.lastChild);
   }
 
-  // set configured topic if provided by server endpoint
-  fetch('/_mqtt_config').then(r => r.json()).then(cfg => {
-    if (cfg && cfg.topic) topicEl.textContent = cfg.topic;
-  }).catch(()=>{});
-
+  // Socket connection events
   socket.on('connect', () => {
-    statusEl.textContent = 'Connected';
+    statusDot.style.background = 'var(--success)';
+    statusLabel.textContent = 'Connected';
   });
   socket.on('disconnect', () => {
-    statusEl.textContent = 'Disconnected';
+    statusDot.style.background = 'var(--danger)';
+    statusLabel.textContent = 'Disconnected';
   });
 
-  // message shape: { topic, payload, raw, received_at }
+  // Handle incoming mqtt messages: extract LoS fields and update tiles + feed
   socket.on('mqtt_message', (msg) => {
     const ts = msg.received_at || new Date().toISOString();
 
-    // parse params similar to server logic
+    // Extract params from expected payload { ts, params: {...} } or direct object
     let params = null;
     if (msg.payload && typeof msg.payload === 'object') {
       params = (msg.payload.params && typeof msg.payload.params === 'object') ? msg.payload.params : msg.payload;
@@ -118,33 +122,33 @@
       }
     }
 
-    // extract LoS keys
-    if (params && typeof params === 'object') {
-      const los = {};
-      for (const kName of Object.keys(params)) {
-        if (typeof kName === 'string' && kName.trim().toLowerCase().startsWith('los')) {
-          los[kName] = params[kName];
+    if (!params || typeof params !== 'object') return;
+
+    // Find keys beginning with "los" (case-insensitive)
+    const los = {};
+    Object.keys(params).forEach(kName => {
+      if (typeof kName === 'string' && kName.trim().toLowerCase().startsWith('los')) {
+        los[kName] = params[kName];
+      }
+    });
+
+    if (Object.keys(los).length === 0) return;
+
+    // Update latest by matching variants
+    KEYS.forEach(mapping => {
+      for (const variant of mapping.keyVariants) {
+        if (Object.prototype.hasOwnProperty.call(los, variant)) {
+          latest[mapping.label] = { value: los[variant], updated_at: ts, raw: los };
+          break;
         }
       }
+    });
 
-      if (Object.keys(los).length > 0) {
-        // update latest state by matching variants
-        KEYS.forEach(mapping => {
-          for (const variant of mapping.keyVariants) {
-            if (los.hasOwnProperty(variant)) {
-              latest[mapping.label] = { value: los[variant], updated_at: ts };
-              break;
-            }
-          }
-        });
-
-        updateTiles();
-        addToFeed(`[${new Date(ts).toLocaleTimeString()}] ${msg.topic} — ${JSON.stringify(los)}`);
-      }
-    }
+    updateTiles();
+    addToFeed(`[${new Date(ts).toLocaleTimeString()}] ${msg.topic} — ${JSON.stringify(los)}`);
   });
 
-  // initial setup
+  // Initial render
   createTiles();
   updateTiles();
 })();

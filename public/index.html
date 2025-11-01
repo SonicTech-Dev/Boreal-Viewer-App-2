@@ -2,142 +2,229 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>LoS — Live Dashboard & Query</title>
+  <title>BOREAL-CH4 MONITOR</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     :root{
-      --bg:#071426;
+      --bg:#2e405e;
+      --panel:#071426;
       --card:#0b1220;
       --muted:#9aa6b2;
       --accent:#06b6d4;
       --accent-2:#60a5fa;
-      --success: #10b981;
+      --success:#10b981;
+      --danger:#f97316;
     }
     *{box-sizing:border-box}
+    html,body{height:100%;margin:0}
     body{
-      margin:0;
       font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial;
-      background: linear-gradient(180deg,#071028 0%, #071426 60%);
+      background: linear-gradient(180deg,var(--bg) 0%, #06132a 60%);
       color:#e6eef6;
-      padding:20px;
+      -webkit-font-smoothing:antialiased;
+      -moz-osx-font-smoothing:grayscale;
+      height:100vh;
+      display:flex;
+      flex-direction:column;
     }
-    header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
-    h1{font-size:18px;margin:0}
-    .sub{color:var(--muted); font-size:13px}
-    main{display:grid;grid-template-columns:1fr 420px;gap:16px}
-    .panel{background:var(--card);padding:12px;border-radius:10px;border:1px solid rgba(255,255,255,0.03)}
-    .controls{display:flex;flex-direction:column;gap:8px}
-    .row{display:flex;gap:8px;align-items:center}
-    input[type="datetime-local"]{padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
-    button{padding:8px 10px;border-radius:8px;border:0;background:var(--accent);color:#042;cursor:pointer}
-    button.secondary{background:var(--accent-2)}
-    .quick{display:flex;gap:8px}
-    .table{width:100%;border-collapse:collapse;font-family:monospace}
-    .table th, .table td{padding:8px;border-bottom:1px solid rgba(255,255,255,0.02);text-align:left}
-    .nowrap{white-space:nowrap}
-    .feed{max-height:420px;overflow:auto}
-    .tiles {display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
-    .tile {
-      background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
-      padding:12px;border-radius:10px;border:1px solid rgba(255,255,255,0.03);
-      position:relative; overflow:visible; cursor:default;
-      transition: transform .12s ease, box-shadow .12s ease;
+
+    /* Header across the top (centered title) */
+    header.app-header {
+      display:flex;
+      align-items:center;
+      justify-content:center; /* center the whole header content */
+      gap:12px;
+      padding:12px 20px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+      height:92px;
+      position:relative;
     }
-    .tile:hover { transform: translateY(-6px); box-shadow: 0 16px 30px rgba(2,6,23,0.7); }
-    .tile .label{color:var(--muted);font-size:13px}
-    .tile .value{font-weight:700;font-size:24px;margin-top:6px}
-    .tile .tiny { font-size:12px; color:var(--muted); margin-top:6px; }
-    /* popup card on hover */
-    .popup {
-      position:absolute;
-      top:8px; right:8px;
-      min-width:180px;
-      background:rgba(3,10,20,0.98);
+    .brand { display:flex; align-items:center; gap:14px; position:absolute; left:20px; } /* keep logo at left */
+    .logo {
+      width:250px;height:60px;border-radius:8px; overflow:hidden;
+      display:flex;align-items:center;justify-content:center;font-weight:700;color:#042;
+      box-shadow:0 8px 26px rgba(2,6,23,0.6);
+      flex-shrink:0;
+      background:transparent;
+    }
+    .logo img { width:100%; height:100%; object-fit:cover; display:block; }
+
+    .title {
+      display:flex;flex-direction:column; line-height:1; text-align:center;
+    }
+    .title h1 { margin:0; font-size:22px; letter-spacing:0.6px; }
+    .title .subtitle { margin-top:6px; color:var(--muted); font-size:13px; }
+
+    .status {
+      display:flex;align-items:center;gap:10px;
+      position:absolute; right:20px; /* status at the right */
+    }
+    .dot { width:12px;height:12px;border-radius:50%; background:var(--danger); box-shadow:0 0 10px rgba(249,115,22,0.14); }
+    .status-label { font-weight:700; color:var(--muted); }
+
+    /* Main content area takes remaining height */
+    .content {
+      display:grid;
+      grid-template-columns: 1fr; /* single column now */
+      gap:16px;
+      padding:16px;
+      height: calc(100vh - 92px);
+      align-items:start;
+      overflow:hidden;
+    }
+
+    /* Main column (full width) is scrollable and contains tiles + query */
+    .main-col {
+      display:flex;
+      flex-direction:column;
+      gap:12px;
+      height:100%;
+      overflow:auto;
+      padding-right:8px;
+      align-items:stretch;
+    }
+
+    /* Centre the laser image under the title */
+    .hero {
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      gap:8px;
+      margin-bottom:6px;
+    }
+    .hero img {
+      max-width:300px;
+      width:100%;
+      border-radius:10px;
       border:1px solid rgba(255,255,255,0.04);
-      padding:10px;border-radius:8px;z-index:10;
-      box-shadow: 0 8px 20px rgba(0,0,0,0.6);
-      display:none;
-      font-size:13px;
+      box-shadow: 0 12px 30px rgba(2,6,23,0.5);
+    }
+    .hero .caption { color:var(--muted); font-size:13px; margin-top:6px; }
+
+    .tiles {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 24px;
+      width: 100%;
+    }
+
+    .tile {
+      background: var(--card);
+      border-radius: 12px;
+      padding: 12px;
+      min-height: 96px;
+      border: 1px solid rgba(255,255,255,0.03);
+      transition: transform .12s ease, box-shadow .12s ease;
+      position: relative;
+      overflow: visible;
+    }
+    .tile:hover { transform: translateY(-6px); box-shadow: 0 18px 36px rgba(0,0,0,0.6); }
+    .tile .label { color:var(--muted); font-size:13px; }
+    .tile .value { font-size:26px; font-weight:700; margin-top:6px; }
+    .tile .meta { font-size:12px; color:var(--muted); margin-top:6px; }
+
+    .popup {
+      position:absolute; right:10px; top:10px;
+      background:rgba(3,10,20,0.96); padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.03);
+      display:none; min-width:180px; z-index:5;
     }
     .tile:hover .popup { display:block; }
-    .popup .k { color:var(--muted); font-size:12px; }
-    .popup .v { font-weight:700; margin-top:6px; font-size:18px; }
-    @media (max-width:980px){main{grid-template-columns:1fr}}
-    .controls-foot { display:flex; gap:8px; align-items:center; margin-top:8px }
-    .export-btn { background:#22c55e; color:#042; padding:8px 10px; border-radius:8px; cursor:pointer; border:0 }
+
+    /* Query panel (below tiles) */
+    .panel {
+      background:var(--card);
+      padding:12px;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,0.03);
+    }
+    .controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    label.inline { color:var(--muted); font-size:13px; margin-right:6px; }
+    input[type="datetime-local"]{ padding:8px; border-radius:6px; border:1px solid rgba(255,255,255,0.06); background:transparent; color:inherit; }
+    .btn { padding:8px 10px; border-radius:8px; border:0; background:var(--accent); color:#042; cursor:pointer; }
+    .btn.secondary { background:var(--accent-2); color:#042; }
+    .quick { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
+
+    .results { margin-top:12px; max-height:360px; overflow:auto; background:rgba(255,255,255,0.01); padding:8px; border-radius:8px; }
+    table.table { width:100%; border-collapse:collapse; font-family:monospace; }
+    table.table th, table.table td { padding:8px; border-bottom:1px solid rgba(255,255,255,0.02); text-align:left; font-size:13px; }
+
+    /* Footer at bottom */
+    footer.app-footer {
+      padding:8px 16px;
+      text-align:center;
+      color:var(--muted);
+      font-size:13px;
+      border-top:1px solid rgba(255,255,255,0.02);
+      background: linear-gradient(180deg, rgba(255,255,255,0.005), transparent);
+    }
+
+    @media (max-width:1100px){
+      .content { grid-template-columns: 1fr; }
+      .hero img { max-width:100%; }
+    }
   </style>
 </head>
 <body>
-  <header>
-    <div>
-      <h1>LoS — Live Dashboard & Query</h1>
-      <div class="sub">Real-time LoS tiles + historical query from Postgres (los_data)</div>
+  <header class="app-header" role="banner" aria-label="BOREAL header">
+    <div class="brand">
+      <!-- logo image from public/static/logo.png -->
+      <div class="logo" id="logo"><img src="/static/boreal.png" alt="BOREAL logo" /></div>
     </div>
-    <div style="text-align:right">
-      <div class="sub">Topic: <code id="topic">(configured)</code></div>
-      <div id="status" class="sub">Connecting...</div>
+
+    <div class="title" role="heading" aria-level="1">
+      <h1>BOREAL-CH4 MONITOR</h1>
+      <div class="subtitle">Live LoS monitoring</div>
+    </div>
+
+    <div class="status" aria-live="polite">
+      <div class="dot" id="status-dot" title="Connection status"></div>
+      <div class="status-label" id="status-label">Connecting…</div>
     </div>
   </header>
 
-  <main>
-    <section>
-      <div class="panel" id="live-panel">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <div class="sub">Live LoS metrics (updated from MQTT)</div>
-          <div class="sub">Newest first</div>
-        </div>
-        <div id="tiles" class="tiles">
-          <!-- Tiles populated by client.js -->
-        </div>
+  <div class="content" role="main">
+    <div class="main-col">
+      <!-- hero laser image centered under heading -->
+      <div class="hero" aria-hidden="false">
+        <!-- laser image from public/static/laser.png -->
+        <img src="/static/2025.png" alt="Laser photo" id="hero-image" />
+        <div class="caption">CH4 Measurement Laser (visual)</div>
       </div>
 
-      <div style="height:12px"></div>
+      <div class="tiles" id="tiles"><!-- tiles injected by client.js --></div>
 
       <div class="panel" id="query-panel">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <div class="sub">Query historical LoS readings (from los_data.recorded_at)</div>
-          <div class="sub">Max 5000 rows</div>
+          <div style="font-weight:600">SQL Query / Viewer</div>
+          <div class="small">Max 5000 rows</div>
         </div>
 
         <div class="controls">
-          <div class="row">
-            <label class="nowrap">From:</label>
-            <input id="from" type="datetime-local" />
-            <label class="nowrap">To:</label>
-            <input id="to" type="datetime-local" />
-            <button id="fetch">Fetch</button>
-          </div>
+          <label class="inline">From:</label>
+          <input id="from" type="datetime-local" />
+          <label class="inline">To:</label>
+          <input id="to" type="datetime-local" />
+          <button id="fetch" class="btn">Fetch</button>
+          <button id="clear-results" class="btn secondary">Clear</button>
+          <button id="export-csv" class="btn" title="Export current results">CSV</button>
+        </div>
 
-          <div class="row quick">
-            <button class="preset" data-range="1h">Last 1h</button>
-            <button class="preset" data-range="6h">6h</button>
-            <button class="preset" data-range="24h">24h</button>
-            <button class="preset" data-range="7d">7d</button>
-            <button id="clear-results" class="secondary">Clear</button>
-          </div>
+        <div class="quick" id="presets-row">
+          <button class="btn preset" data-range="1h">Last 1h</button>
+          <button class="btn preset" data-range="6h">6h</button>
+          <button class="btn preset" data-range="24h">24h</button>
+          <button class="btn preset" data-range="7d">7d</button>
+        </div>
 
-          <div class="controls-foot">
-            <div class="sub">SQL Viewer (results below)</div>
-            <button id="export-csv" class="export-btn">Export CSV</button>
-          </div>
-
-          <div style="margin-top:8px">
-            <div class="sub">Results</div>
-            <div class="feed" id="results" style="margin-top:8px">
-              <div class="sub" id="results-empty">No results yet</div>
-            </div>
-          </div>
+        <div class="results" id="results">
+          <div id="results-empty" class="small">No results yet</div>
         </div>
       </div>
-    </section>
+    </div>
+  </div>
 
-    <aside>
-      <div class="panel">
-        <div class="sub">Recent LoS messages (real-time feed)</div>
-        <div id="feed" class="feed" style="margin-top:8px"></div>
-      </div>
-    </aside>
-  </main>
+  <footer class="app-footer">Powered by SONIC</footer>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="/client.js"></script>

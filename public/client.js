@@ -10,11 +10,11 @@
 
   // Tile key mappings and variants (keeps previous variants)
   const KEYS = [
-    { keyVariants: ['LoS-Temp(c)'], label: 'LoS-Temp (°C)', apiField: 'los_temp' },
-    { keyVariants: ['LoS-Rx Light'], label: 'LoS-Rx Light', apiField: 'los_rx_light' },
-    { keyVariants: ['LoS- R2', 'LoS-R2', 'LoS - R2'], label: 'LoS-R2', apiField: 'los_r2' },
-    { keyVariants: ['LoS-HeartBeat', 'LoS- HeartBeat'], label: 'LoS-HeartBeat', apiField: 'los_heartbeat' },
-    { keyVariants: ['LoS - PPM', 'LoS- PPM', 'LoS-PPM'], label: 'LoS-PPM', apiField: 'los_ppm' }
+    { keyVariants: ['LoS-Temp(c)'], label: 'Temp (°C)', apiField: 'los_temp' },
+    { keyVariants: ['LoS-Rx Light'], label: 'Rx Light', apiField: 'los_rx_light' },
+    { keyVariants: ['LoS- R2', 'LoS-R2', 'LoS - R2'], label: 'R2', apiField: 'los_r2' },
+    { keyVariants: ['LoS-HeartBeat', 'LoS- HeartBeat'], label: 'HeartBeat', apiField: 'los_heartbeat' },
+    { keyVariants: ['LoS - PPM', 'LoS- PPM', 'LoS-PPM'], label: 'GasFinder-PPM', apiField: 'los_ppm' }
   ];
 
   // Store latest values

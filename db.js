@@ -78,7 +78,8 @@ async function insertLosData(topic, rawPayload, losObj, receivedAt) {
  * @param {number} limit
  * @returns {Promise<Array>} rows
  */
-async function fetchLosData(from, to, limit = 500) {
+// Add "offset" parameter with default 0
+async function fetchLosData(from, to, limit = 500, offset = 0) {
   const clauses = [];
   const values = [];
   let idx = 1;
@@ -93,7 +94,7 @@ async function fetchLosData(from, to, limit = 500) {
   }
 
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-  // inside fetchLosData replace the sql string with this:
+  // Add OFFSET $idx
   const sql = `
     SELECT id,
           "LoS-Temp(c)" AS los_temp,
@@ -101,15 +102,15 @@ async function fetchLosData(from, to, limit = 500) {
           "LoS- R2" AS los_r2,
           "LoS-HeartBeat" AS los_heartbeat,
           "LoS - PPM" AS los_ppm,
-          -- formatted recorded_at string in UAE (Asia/Dubai)
           to_char(recorded_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Dubai', 'YYYY-MM-DD HH24:MI:SS') AS recorded_at_str,
           recorded_at
     FROM los_data
     ${where}
     ORDER BY recorded_at DESC
-    LIMIT $${idx++};
+    LIMIT $${idx++}
+    OFFSET $${idx++};
   `;
-  values.push(Number(limit));
+  values.push(Number(limit), Number(offset));
 
   try {
     const res = await pool.query(sql, values);

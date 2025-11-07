@@ -1,4 +1,3 @@
-// server.js — Node/Express + MQTT + Socket.IO server writing LoS values into los_data
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
@@ -10,14 +9,12 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// Config
 const MQTT_URL = process.env.MQTT_URL || 'mqtt://localhost:1883';
 const MQTT_TOPIC = process.env.MQTT_TOPIC || 'sensors/+/reading';
 const PORT = process.env.PORT || 3000;
 
 app.use(express.static('public'));
 
-// Expose topic to client
 app.get('/_mqtt_config', (req, res) => {
   res.json({ topic: MQTT_TOPIC });
 });
@@ -27,17 +24,24 @@ app.get('/_mqtt_config', (req, res) => {
  * Params:
  *  - from, to (ISO) using recorded_at column
  *  - limit
+ *  - offset (for pagination)
  */
 app.get('/api/los', async (req, res) => {
-  const { from, to, limit } = req.query;
+  const { from, to, limit, offset } = req.query; // <--- add offset here
   let parsedLimit = 500;
   if (limit) {
     const n = parseInt(limit, 10);
     if (!Number.isNaN(n) && n > 0 && n <= 5000) parsedLimit = n;
   }
+  let parsedOffset = 0;
+  if (offset) {
+    const n = parseInt(offset, 10);
+    if (!Number.isNaN(n) && n >= 0) parsedOffset = n;
+  }
 
   try {
-    const rows = await fetchLosData(from || null, to || null, parsedLimit);
+    // Pass offset to fetchLosData!
+    const rows = await fetchLosData(from || null, to || null, parsedLimit, parsedOffset);
     res.json({ ok: true, rows });
   } catch (err) {
     console.error('GET /api/los error:', err && err.message ? err.message : err);
@@ -57,7 +61,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// MQTT client
 const mqttOptions = {};
 if (process.env.MQTT_USERNAME) mqttOptions.username = process.env.MQTT_USERNAME;
 if (process.env.MQTT_PASSWORD) mqttOptions.password = process.env.MQTT_PASSWORD;
@@ -79,13 +82,10 @@ client.on('message', (topic, payloadBuffer) => {
   const payloadString = payloadBuffer.toString();
   const timestamp = new Date().toISOString();
 
-  // parse payload
   let payload = payloadString;
   try {
     payload = JSON.parse(payloadString);
-  } catch (e) {
-    // non-JSON payload -> keep as string
-  }
+  } catch (e) {}
 
   const message = {
     topic,
@@ -94,10 +94,8 @@ client.on('message', (topic, payloadBuffer) => {
     received_at: timestamp
   };
 
-  // emit live
   io.emit('mqtt_message', message);
 
-  // extract params object
   let params = null;
   if (payload && typeof payload === 'object') {
     params = (payload.params && typeof payload.params === 'object') ? payload.params : payload;
@@ -111,7 +109,6 @@ client.on('message', (topic, payloadBuffer) => {
   }
 
   if (params && typeof params === 'object') {
-    // find LoS keys (case-insensitive start with 'los')
     const los = {};
     for (const k of Object.keys(params)) {
       if (typeof k === 'string' && k.trim().toLowerCase().startsWith('los')) {
@@ -120,7 +117,6 @@ client.on('message', (topic, payloadBuffer) => {
     }
 
     if (Object.keys(los).length > 0) {
-      // insert into los_data (fire-and-forget)
       insertLosData(topic, payload, los, timestamp)
         .then((r) => {
           if (!r) {
@@ -133,7 +129,6 @@ client.on('message', (topic, payloadBuffer) => {
     }
   }
 
-  // console log
   console.log(`[${timestamp}] ${topic} ->`, payloadString);
 });
 

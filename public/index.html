@@ -42,9 +42,8 @@
     }
     .brand { display:flex; align-items:center; gap:14px; position:absolute; left:20px; } /* keep logo at left */
     .logo {
-      width:250px;height:60px;border-radius:8px; overflow:hidden;
+      width:260px;height:90px;border-radius:8px; overflow:hidden;
       display:flex;align-items:center;justify-content:center;font-weight:700;color:#042;
-      box-shadow:0 8px 26px rgba(2,6,23,0.6);
       flex-shrink:0;
       background:transparent;
     }
@@ -53,7 +52,7 @@
     .title {
       display:flex;flex-direction:column; line-height:1; text-align:center;
     }
-    .title h1 { margin:0; font-size:22px; letter-spacing:0.6px; }
+    .title h1 { margin:0; font-size:42px; letter-spacing:0.6px; }
     .title .subtitle { margin-top:6px; color:var(--muted); font-size:13px; }
 
     .status {
@@ -94,7 +93,7 @@
       margin-bottom:6px;
     }
     .hero img {
-      max-width:300px;
+      max-width:500px;
       width:100%;
       border-radius:10px;
       border:1px solid rgba(255,255,255,0.04);
@@ -131,6 +130,13 @@
     }
     .tile:hover .popup { display:block; }
 
+    /* --- Custom styling for LoS-PPM (GasFinder-PPM) value --- */
+    /* target the tile created with apiField "los_ppm" and its popup value */
+    #tile-los_ppm .value,
+    #popup-los_ppm #popup-val-los_ppm {
+      color: var(--accent-2);
+    }
+
     /* Query panel (below tiles) */
     .panel {
       background:var(--card);
@@ -142,7 +148,9 @@
     label.inline { color:var(--muted); font-size:13px; margin-right:6px; }
     input[type="datetime-local"]{ padding:8px; border-radius:6px; border:1px solid rgba(255,255,255,0.06); background:transparent; color:inherit; }
     .btn { padding:8px 10px; border-radius:8px; border:0; background:var(--accent); color:#042; cursor:pointer; }
+    .btn:hover { background:var(--accent-2); color: #858383; }
     .btn.secondary { background:var(--accent-2); color:#042; }
+    .btn.secondary:hover { background:var(--accent); color: #858383; }
     .quick { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
 
     .results { margin-top:12px; max-height:360px; overflow:auto; background:rgba(255,255,255,0.01); padding:8px; border-radius:8px; }
@@ -158,29 +166,109 @@
       border-top:1px solid rgba(255,255,255,0.02);
       background: linear-gradient(180deg, rgba(255,255,255,0.005), transparent);
     }
+    footer.app-footer-version {
+      padding:1px 10px;
+      text-align:center;
+      color:var(--muted);
+      font-size:10px;
+      border-top:1px solid rgba(255,255,255,0.02);
+      background: linear-gradient(180deg, rgba(255,255,255,0.005), transparent);
+    }
 
+    /*
+      RESPONSIVE ADJUSTMENTS
+      - Reduce header height on small screens
+      - Allow brand/title/status to wrap and reflow
+      - Shrink logo and text so they don't overlap/collapse
+      - Move status under title on narrow screens
+    */
     @media (max-width:1100px){
       .content { grid-template-columns: 1fr; }
       .hero img { max-width:100%; }
     }
+
+    @media (max-width:800px){
+      header.app-header {
+        height: auto;
+        padding:12px;
+        align-items:flex-start;
+      }
+      /* allow brand/title/status to stack */
+      .brand {
+        position:static;
+        order:0;
+        left:auto;
+        margin-bottom:8px;
+      }
+      .logo {
+        width:180px;
+        height:48px;
+      }
+      .title {
+        order:1;
+        width:100%;
+        text-align:left;
+        margin-left:4px;
+      }
+      .title h1 { font-size:30px; }
+      .title .subtitle { font-size:12px; }
+
+      .status {
+        position:static;
+        order:2;
+        margin-top:8px;
+        width:100%;
+        justify-content:flex-start;
+      }
+      .status-label { font-size:13px; color:var(--muted); }
+
+      /* reduce padding on tiles and controls for small screens */
+      .tile { padding:10px; min-height:80px; }
+      .panel { padding:10px; }
+      .controls { gap:6px; }
+      .btn { padding:7px 8px; font-size:13px; }
+    }
+
+    /* Very small screens / phones */
+    @media (max-width:420px){
+      header.app-header { padding:10px; }
+      .brand { display:flex; align-items:center; gap:10px; }
+      .logo { width:130px; height:40px; }
+      .title h1 { font-size:16px; }
+      .title .subtitle { font-size:11px; }
+      .hero img { max-width:260px; }
+      /* collapse status dot/label to smaller */
+      .dot { width:10px; height:10px; }
+      .status-label { font-size:12px; }
+      .tiles { gap:12px; }
+      .tile .value { font-size:20px; }
+    }
+
+    /* If the logo image is very wide and may still cause overflow, allow it to shrink */
+    .logo img { max-width:100%; height:auto; object-fit:contain; display:block; }
+
+    /* Ensure content area shrinks correctly on very short viewports (mobile browsers with address bar) */
+    @supports (height: 100svh) {
+      .content { height: calc(100svh - 92px); }
+    }
+    @supports (height: 100dvh) {
+      .content { height: calc(100dvh - 92px); }
+    }
+
   </style>
 </head>
 <body>
   <header class="app-header" role="banner" aria-label="BOREAL header">
-    <div class="brand">
+    <div class="brand" aria-hidden="false">
       <!-- logo image from public/static/logo.png -->
-      <div class="logo" id="logo"><img src="/static/boreal.png" alt="BOREAL logo" /></div>
+      <div class="logo" id="logo"><img src="/Static/boreal.png" alt="BOREAL logo" /></div>
     </div>
 
     <div class="title" role="heading" aria-level="1">
-      <h1>BOREAL-CH4 MONITOR</h1>
-      <div class="subtitle">Live LoS monitoring</div>
+      <h1>CH4 REMOTE MONITOR</h1>
+      <div class="subtitle">Realtime GasFinder CH4 Remote Monitoring</div>
     </div>
 
-    <div class="status" aria-live="polite">
-      <div class="dot" id="status-dot" title="Connection status"></div>
-      <div class="status-label" id="status-label">Connecting…</div>
-    </div>
   </header>
 
   <div class="content" role="main">
@@ -188,7 +276,7 @@
       <!-- hero laser image centered under heading -->
       <div class="hero" aria-hidden="false">
         <!-- laser image from public/static/laser.png -->
-        <img src="/static/2025.png" alt="Laser photo" id="hero-image" />
+        <img src="/Static/Laser.png" alt="Laser photo" id="hero-image" />
         <div class="caption">CH4 Measurement Laser (visual)</div>
       </div>
 
@@ -197,7 +285,6 @@
       <div class="panel" id="query-panel">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <div style="font-weight:600">SQL Query / Viewer</div>
-          <div class="small">Max 5000 rows</div>
         </div>
 
         <div class="controls">
@@ -205,16 +292,18 @@
           <input id="from" type="datetime-local" />
           <label class="inline">To:</label>
           <input id="to" type="datetime-local" />
-          <button id="fetch" class="btn">Fetch</button>
+          <button id="fetch" class="btn">Query</button>
           <button id="clear-results" class="btn secondary">Clear</button>
           <button id="export-csv" class="btn" title="Export current results">CSV</button>
         </div>
 
         <div class="quick" id="presets-row">
-          <button class="btn preset" data-range="1h">Last 1h</button>
+          <button class="btn preset" data-range="1h">1h</button>
           <button class="btn preset" data-range="6h">6h</button>
+          <button class="btn preset" data-range="12h">12h</button>
           <button class="btn preset" data-range="24h">24h</button>
           <button class="btn preset" data-range="7d">7d</button>
+          <button class="btn preset" data-range="30d">30d</button>
         </div>
 
         <div class="results" id="results">
@@ -223,8 +312,9 @@
       </div>
     </div>
   </div>
-
+  <footer class="app-footer-version">2025 V1.68</footer>
   <footer class="app-footer">Powered by SONIC</footer>
+
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="/client.js"></script>

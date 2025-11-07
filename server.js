@@ -3,6 +3,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const mqtt = require('mqtt');
+const { exec } = require('child_process');
 const { insertLosData, fetchLosData } = require('./db');
 
 const app = express();
@@ -49,9 +50,78 @@ app.get('/api/los', async (req, res) => {
   }
 });
 
+// --- Added: device ping status endpoint & ping loop (child_process method) ---
+const DEVICE_IP = process.env.DEVICE_IP || '10.0.0.42';
+const PING_INTERVAL_MS = parseInt(process.env.PING_INTERVAL_MS || String(30 * 1000), 10);
+const PING_TIMEOUT_SECONDS = parseInt(process.env.PING_TIMEOUT_SECONDS || '5', 10);
+
+// last known device status
+let lastDeviceStatus = {
+  ip: DEVICE_IP,
+  online: false,
+  rtt: null,
+  ts: null
+};
+
+app.get('/_device_status', (req, res) => {
+  res.json({ ok: true, status: lastDeviceStatus });
+});
+
+// helper to run system ping (uses child_process.exec)
+// Note: uses Linux-style ping options: -c 1 (one packet) and -W timeout (seconds)
+function pingHost(ip, timeoutSeconds) {
+  return new Promise((resolve) => {
+    // Build command - prefer -W (timeout in seconds) which works on many linux distros.
+    // If -W is unavailable on a platform, the command will still fail and we treat as offline.
+    const cmd = `ping -c 1 -W ${timeoutSeconds} ${ip}`;
+    exec(cmd, { timeout: (timeoutSeconds + 2) * 1000 }, (err, stdout, stderr) => {
+      const now = new Date().toISOString();
+      if (!err) {
+        // parse RTT from stdout: look for "time=NN.N ms"
+        const m = stdout.match(/time=([0-9.]+)\s*ms/);
+        const rtt = m ? Number(m[1]) : null;
+        resolve({ online: true, rtt, ts: now });
+      } else {
+        resolve({ online: false, rtt: null, ts: now, error: err.message });
+      }
+    });
+  });
+}
+
+async function doPingEmit() {
+  try {
+    const res = await pingHost(DEVICE_IP, PING_TIMEOUT_SECONDS);
+    lastDeviceStatus = {
+      ip: DEVICE_IP,
+      online: !!res.online,
+      rtt: res.rtt,
+      ts: res.ts || new Date().toISOString()
+    };
+    io.emit('device_status', lastDeviceStatus);
+    if (lastDeviceStatus.online) {
+      console.log(`[PING ${lastDeviceStatus.ts}] ${DEVICE_IP} ONLINE rtt=${lastDeviceStatus.rtt}ms`);
+    } else {
+      console.warn(`[PING ${lastDeviceStatus.ts}] ${DEVICE_IP} OFFLINE`);
+    }
+  } catch (err) {
+    const now = new Date().toISOString();
+    console.error(`[PING ${now}] error pinging ${DEVICE_IP}:`, err && err.message ? err.message : err);
+    lastDeviceStatus = { ip: DEVICE_IP, online: false, rtt: null, ts: now };
+    io.emit('device_status', lastDeviceStatus);
+  }
+}
+
+// start ping loop immediately and every 30s
+doPingEmit().catch(() => {});
+setInterval(() => {
+  doPingEmit().catch(() => {});
+}, PING_INTERVAL_MS);
+// --- end ping additions ---
+
 server.listen(PORT, () => {
   console.log(`Web server listening on http://localhost:${PORT}`);
   console.log(`Connecting to MQTT broker at ${MQTT_URL} and subscribing to ${MQTT_TOPIC}`);
+  console.log(`Pinging ${DEVICE_IP} every ${PING_INTERVAL_MS/1000}s with timeout ${PING_TIMEOUT_SECONDS}s`);
 });
 
 io.on('connection', (socket) => {

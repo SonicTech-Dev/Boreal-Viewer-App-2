@@ -80,7 +80,15 @@
         if (popupVal) popupVal.textContent = '-';
         if (popupTime) popupTime.textContent = '—';
       } else {
-        const display = (typeof info.value === 'number' && !Number.isInteger(info.value)) ? info.value.toFixed(2) : String(info.value);
+        // Apply R2 display transformation: divide by 100 before showing
+        let displayValue = info.value;
+        if (k.label === 'R2') {
+          const n = Number(info.value);
+          if (!Number.isNaN(n)) displayValue = n / 100;
+          // if not numeric, leave as-is (will be string)
+        }
+
+        const display = (typeof displayValue === 'number' && !Number.isInteger(displayValue)) ? displayValue.toFixed(2) : String(displayValue);
         valueEl.textContent = display;
         metaEl.textContent = info.updated_at ? ('updated: ' + new Date(info.updated_at).toLocaleTimeString()) : 'No data';
         if (popupVal) popupVal.textContent = display;
@@ -98,6 +106,14 @@
     if (feedEl.firstChild) feedEl.insertBefore(item, feedEl.firstChild);
     else feedEl.appendChild(item);
     while (feedEl.childElementCount > 200) feedEl.removeChild(feedEl.lastChild);
+  }
+
+  // Utility: clear all readings (set them to null so updateTiles shows '-')
+  function clearAllReadings() {
+    KEYS.forEach(k => {
+      latest[k.label] = { value: null, updated_at: null, raw: null };
+    });
+    updateTiles();
   }
 
   // --- SIMPLE ONLINE/OFFLINE STATUS (device ping only) ---
@@ -124,6 +140,10 @@
     if (deviceOnline === null) {
       // keep "Checking…" as set in index.html
       return;
+    }
+    // If device offline, clear readings immediately
+    if (deviceOnline === false) {
+      clearAllReadings();
     }
     setStatusVisual(deviceOnline);
   }
@@ -240,6 +260,14 @@
 
     if (Object.keys(los).length === 0) return;
 
+    // If device is offline, ignore incoming readings and keep them cleared
+    if (deviceOnline === false) {
+      // still add feed entry that we ignored the reading (optional)
+      addToFeed(`[${new Date(ts).toLocaleTimeString()}] MQTT reading ignored (device offline) — ${msg.topic}`);
+      return;
+    }
+
+    // Update latest values by matching variants
     KEYS.forEach(mapping => {
       for (const variant of mapping.keyVariants) {
         if (Object.prototype.hasOwnProperty.call(los, variant)) {

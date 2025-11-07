@@ -2,6 +2,8 @@
 // Full feature set restored: hover popups, real-time feed, status dot/label.
 
 (function () {
+  // public/client.js
+  // Shows simple Online/Offline based solely on server ping results (device_status)
   const socket = io();
   const statusDot = document.getElementById('status-dot');
   const statusLabel = document.getElementById('status-label');
@@ -9,7 +11,7 @@
   const tilesContainer = document.getElementById('tiles');
   const feedEl = document.getElementById('feed');
 
-  // Tile key mappings and variants (keeps previous variants)
+  // Tile key mappings and variants
   const KEYS = [
     { keyVariants: ['LoS-Temp(c)'], label: 'Temp (°C)', apiField: 'los_temp' },
     { keyVariants: ['LoS-Rx Light'], label: 'Rx Light', apiField: 'los_rx_light' },
@@ -24,6 +26,7 @@
 
   // Create tiles with popup for each metric
   function createTiles() {
+    if (!tilesContainer) return;
     tilesContainer.innerHTML = '';
     KEYS.forEach(k => {
       const tile = document.createElement('div');
@@ -60,7 +63,7 @@
     });
   }
 
-  // Update tile values and popup times
+  // Update tiles
   function updateTiles() {
     KEYS.forEach(k => {
       const info = latest[k.label];
@@ -86,19 +89,86 @@
     });
   }
 
-  // Add item to debug feed (prepend)
+  // Feed helper
   function addToFeed(msgText) {
+    if (!feedEl) return;
     const item = document.createElement('div');
     item.className = 'feed-item';
     item.textContent = msgText;
-    if (feedEl && feedEl.firstChild) feedEl.insertBefore(item, feedEl.firstChild);
-    else if (feedEl) feedEl.appendChild(item);
-    if (feedEl) {
-      while (feedEl.childElementCount > 200) feedEl.removeChild(feedEl.lastChild);
+    if (feedEl.firstChild) feedEl.insertBefore(item, feedEl.firstChild);
+    else feedEl.appendChild(item);
+    while (feedEl.childElementCount > 200) feedEl.removeChild(feedEl.lastChild);
+  }
+
+  // --- SIMPLE ONLINE/OFFLINE STATUS (device ping only) ---
+  // deviceOnline: null = unknown (shows "Checking…"), true = online, false = offline
+  let deviceOnline = null;
+  let deviceIp = null;
+  let deviceRtt = null;
+  let deviceLastSeen = null;
+
+  function setStatusVisual(online) {
+    if (!statusDot || !statusLabel) return;
+    if (online) {
+      statusDot.style.background = 'var(--success)';
+      statusDot.style.boxShadow = '0 0 10px rgba(16,185,129,0.18)';
+      statusLabel.textContent = 'Online';
+    } else {
+      statusDot.style.background = 'var(--danger)';
+      statusDot.style.boxShadow = '0 0 10px rgba(249,115,22,0.14)';
+      statusLabel.textContent = 'Offline';
     }
   }
 
-  // Local time updater (shows device-local date/time) in DD/MM/YYYY HH:MM:SS
+  function applyDeviceStatus() {
+    if (deviceOnline === null) {
+      // keep "Checking…" as set in index.html
+      return;
+    }
+    setStatusVisual(deviceOnline);
+  }
+
+  // Listen for backend ping events
+  socket.on('device_status', (s) => {
+    if (!s || typeof s !== 'object') return;
+    deviceIp = s.ip || deviceIp;
+    deviceOnline = !!s.online;
+    deviceRtt = (s.rtt !== undefined && s.rtt !== null) ? Number(s.rtt) : null;
+    deviceLastSeen = s.ts || new Date().toISOString();
+
+    applyDeviceStatus();
+
+    addToFeed(`[${new Date(deviceLastSeen).toLocaleTimeString()}] PING ${deviceIp} — ${deviceOnline ? ('online rtt=' + (deviceRtt !== null ? deviceRtt + 'ms' : 'n/a')) : 'offline'}`);
+  });
+
+  // Bootstrap on load from /_device_status
+  (async function initStatus() {
+    try {
+      const res = await fetch('/_device_status', { cache: 'no-cache' });
+      if (res.ok) {
+        const j = await res.json();
+        if (j && j.status) {
+          const s = j.status;
+          deviceIp = s.ip || deviceIp;
+          deviceOnline = (s.online === undefined) ? null : !!s.online;
+          deviceRtt = (s.rtt !== undefined && s.rtt !== null) ? Number(s.rtt) : null;
+          deviceLastSeen = s.ts || new Date().toISOString();
+        }
+      }
+    } catch (e) {
+      // leave deviceOnline = null (still "Checking…")
+    } finally {
+      if (deviceOnline === true || deviceOnline === false) {
+        applyDeviceStatus();
+        if (deviceLastSeen) {
+          addToFeed(`[${new Date(deviceLastSeen).toLocaleTimeString()}] PING ${deviceIp} — ${deviceOnline ? ('online rtt=' + (deviceRtt !== null ? deviceRtt + 'ms' : 'n/a')) : 'offline'}`);
+        }
+      }
+    }
+  })();
+  // --- end status logic ---
+
+  // Local time updater (DD/MM/YYYY HH:MM:SS)
   function pad(n) { return String(n).padStart(2, '0'); }
   function updateLocalTime() {
     if (!localTimeEl) return;
@@ -111,79 +181,15 @@
     const seconds = pad(now.getSeconds());
     localTimeEl.textContent = `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
   }
-  // Update immediately and every second
   updateLocalTime();
   setInterval(updateLocalTime, 1000);
 
-  // Socket connection events
-  socket.on('connect', () => {
-    if (statusDot) statusDot.style.background = 'var(--success)';
-    if (statusLabel) statusLabel.textContent = 'Connected';
-  });
-  socket.on('disconnect', () => {
-    if (statusDot) statusDot.style.background = 'var(--danger)';
-    if (statusLabel) statusLabel.textContent = 'Disconnected';
-  });
-
-  // Listen for backend device ping events (emitted by server)
-  // payload: { ip, online, rtt, ts }
-  socket.on('device_status', (s) => {
-    if (!s || typeof s !== 'object') return;
-    const online = !!s.online;
-    const ip = s.ip || '';
-    const rtt = (s.rtt !== undefined && s.rtt !== null) ? (String(s.rtt) + 'ms') : 'n/a';
-    const ts = s.ts || new Date().toISOString();
-
-    if (statusDot) {
-      statusDot.style.background = online ? 'var(--success)' : 'var(--danger)';
-      statusDot.style.boxShadow = online ? '0 0 10px rgba(16,185,129,0.18)' : '0 0 10px rgba(249,115,22,0.14)';
-    }
-    if (statusLabel) {
-      statusLabel.textContent = online ? `Online (${ip} rtt=${rtt})` : `Offline (${ip})`;
-    }
-
-    // optional: add to feed (if feed exists)
-    addToFeed(`[${new Date(ts).toLocaleTimeString()}] PING ${ip} — ${online ? ('online rtt=' + rtt) : 'offline'}`);
-  });
-
-  // Initialize device status from backend on load (fast bootstrap)
-  (async function initStatus() {
-    try {
-      const res = await fetch('/_device_status', { cache: 'no-cache' });
-      if (res.ok) {
-        const j = await res.json();
-        if (j && j.status) {
-          const s = j.status;
-          if (s && typeof s === 'object') {
-            const online = !!s.online;
-            const ip = s.ip || '';
-            const rtt = (s.rtt !== undefined && s.rtt !== null) ? (String(s.rtt) + 'ms') : 'n/a';
-            const ts = s.ts || new Date().toISOString();
-
-            if (statusDot) {
-              statusDot.style.background = online ? 'var(--success)' : 'var(--danger)';
-              statusDot.style.boxShadow = online ? '0 0 10px rgba(16,185,129,0.18)' : '0 0 10px rgba(249,115,22,0.14)';
-            }
-            if (statusLabel) {
-              statusLabel.textContent = online ? `Online (${ip} rtt=${rtt})` : `Offline (${ip})`;
-            }
-            addToFeed(`[${new Date(ts).toLocaleTimeString()}] PING ${ip} — ${online ? ('online rtt=' + rtt) : 'offline'}`);
-          }
-        }
-      }
-    } catch (e) {
-      // ignore; we'll wait for socket events
-    }
-  })();
-
-  // --- Selection styling for Query + preset buttons ---
-  // Visual selection: use var(--success) (light green) for selected background and dark text.
+  // --- Button selection visuals (Query + preset buttons) ---
   const selectionGroupSelector = '#fetch, .btn.preset';
   function clearSelectionStyles() {
     const all = document.querySelectorAll(selectionGroupSelector);
     all.forEach(el => {
       el.classList.remove('selected');
-      // remove inline styles we set earlier
       el.style.background = '';
       el.style.color = '';
       el.style.boxShadow = '';
@@ -193,37 +199,24 @@
     clearSelectionStyles();
     if (!el) return;
     el.classList.add('selected');
-    // apply visible selected style (use CSS variables to match theme)
     el.style.background = 'var(--success)';
     el.style.color = '#042';
     el.style.boxShadow = '0 6px 14px rgba(16,185,129,0.12)';
   }
-
-  // Attach click handlers to the group (presets + Query)
   function wireSelectionHandlers() {
     const elems = document.querySelectorAll(selectionGroupSelector);
     elems.forEach(el => {
-      // preserve any existing onclick handlers — we only decorate
-      el.addEventListener('click', (ev) => {
-        // If the clicked element is the already-selected one, keep it selected.
-        // Otherwise, set new selection (single-select behavior).
-        if (!el.classList.contains('selected')) {
-          applySelectionStyle(el);
-        }
-        // allow other click logic (e.g., fetch handling) to proceed
+      el.addEventListener('click', () => {
+        if (!el.classList.contains('selected')) applySelectionStyle(el);
       });
     });
   }
-
-  // Initial wiring (buttons exist in DOM when this script runs)
   wireSelectionHandlers();
-  // --- end selection logic ---
 
-  // Handle incoming mqtt messages: extract LoS fields and update tiles + feed
+  // Handle incoming mqtt messages: update tiles and feed
   socket.on('mqtt_message', (msg) => {
     const ts = msg.received_at || new Date().toISOString();
 
-    // Extract params from expected payload { ts, params: {...} } or direct object
     let params = null;
     if (msg.payload && typeof msg.payload === 'object') {
       params = (msg.payload.params && typeof msg.payload.params === 'object') ? msg.payload.params : msg.payload;
@@ -238,7 +231,6 @@
 
     if (!params || typeof params !== 'object') return;
 
-    // Find keys beginning with "los" (case-insensitive)
     const los = {};
     Object.keys(params).forEach(kName => {
       if (typeof kName === 'string' && kName.trim().toLowerCase().startsWith('los')) {
@@ -248,7 +240,6 @@
 
     if (Object.keys(los).length === 0) return;
 
-    // Update latest by matching variants
     KEYS.forEach(mapping => {
       for (const variant of mapping.keyVariants) {
         if (Object.prototype.hasOwnProperty.call(los, variant)) {

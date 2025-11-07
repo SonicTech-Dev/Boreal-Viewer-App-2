@@ -219,9 +219,10 @@
     clearSelectionStyles();
     if (!el) return;
     el.classList.add('selected');
-    el.style.background = 'var(--success)';
-    el.style.color = '#042';
-    el.style.boxShadow = '0 6px 14px rgba(16,185,129,0.12)';
+    // changed highlight color to red as requested
+    el.style.background = '#ef4444';
+    el.style.color = '#fff';
+    el.style.boxShadow = '0 6px 14px rgba(239,68,68,0.12)';
   }
   function wireSelectionHandlers() {
     const elems = document.querySelectorAll(selectionGroupSelector);
@@ -234,12 +235,11 @@
   wireSelectionHandlers();
 
   // --- Results count logic ---
-  // Adds/updates a small count display under the results table indicating total rows returned by query.
-  // Works without changing your existing query-client.js by watching #results for a table being inserted/updated.
+  // Adds/updates a small count display UNDER the results table that is always visible
+  // (we place the element as a sibling after the scrollable #results container so it doesn't get hidden by scrolling).
 
-  // Create or update the count element under #results
-  function setResultsCount(count) {
-    if (!resultsEl) return;
+  // Create or update the count element (placed AFTER the resultsEl so it remains visible)
+  function createOrGetCountEl() {
     let countEl = document.getElementById('results-count');
     if (!countEl) {
       countEl = document.createElement('div');
@@ -247,9 +247,46 @@
       countEl.style.marginTop = '8px';
       countEl.style.color = 'var(--muted)';
       countEl.style.fontSize = '13px';
-      resultsEl.appendChild(countEl);
+      countEl.style.fontWeight = '600';
     }
-    countEl.textContent = `Total entries: ${count.toLocaleString()}`;
+    return countEl;
+  }
+
+  function placeCountElementVisible() {
+    if (!resultsEl) return;
+    const countEl = createOrGetCountEl();
+    const parent = resultsEl.parentNode || document.body;
+    // Insert as a direct sibling immediately after resultsEl so it's always visible (outside the scrollable area)
+    if (countEl.parentNode !== parent || countEl.nextSibling !== resultsEl.nextSibling) {
+      // remove from previous parent if necessary
+      if (countEl.parentNode) countEl.parentNode.removeChild(countEl);
+      if (resultsEl.nextSibling) parent.insertBefore(countEl, resultsEl.nextSibling);
+      else parent.appendChild(countEl);
+    }
+  }
+
+  function setResultsCount(count) {
+    const countEl = createOrGetCountEl();
+    // label changed to "Total Count" per your request
+    countEl.textContent = `Total Count: ${count.toLocaleString()}`;
+    // Ensure it's visible (placed after results container)
+    placeCountElementVisible();
+  }
+
+  // Remove "Fetch all" button if present (we'll keep the count element visible instead)
+  function removeFetchAllButtonIfPresent() {
+    if (!resultsEl) return false;
+    const candidates = Array.from(resultsEl.querySelectorAll('button, input[type="button"], a'));
+    for (const el of candidates) {
+      const txt = (el.textContent || el.value || '').trim().toLowerCase();
+      const id = (el.id || '').toLowerCase();
+      const cls = (el.className || '').toLowerCase();
+      if (txt.includes('fetch all') || txt === 'fetch all' || (id.includes('fetch') && id.includes('all')) || (cls.includes('fetch') && cls.includes('all'))) {
+        try { el.parentNode.removeChild(el); } catch (e) { /* ignore */ }
+        return true;
+      }
+    }
+    return false;
   }
 
   // Compute number of data rows in the results table
@@ -278,6 +315,8 @@
   // Run a one-time count update (useful after query completes)
   function updateResultsCountNow() {
     const count = computeResultsRowCount();
+    // remove the Fetch all button if present (we replace it with the visible count)
+    removeFetchAllButtonIfPresent();
     setResultsCount(count);
   }
 

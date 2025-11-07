@@ -87,15 +87,12 @@
       nextBtn.id = 'page-next';
       nextBtn.disabled = true;
 
-      const fetchAllBtn = document.createElement('button');
-      fetchAllBtn.className = 'btn';
-      fetchAllBtn.textContent = 'Fetch All';
-      fetchAllBtn.title = 'Fetch all pages sequentially in the background (can be large)';
+      // NOTE: Fetch All button removed as requested.
 
       pagingControlsEl.appendChild(prevBtn);
       pagingControlsEl.appendChild(pageLabel);
       pagingControlsEl.appendChild(nextBtn);
-      pagingControlsEl.appendChild(fetchAllBtn);
+      // (Fetch All omitted)
 
       // spacer so moved buttons align to right
       const spacer = document.createElement('div');
@@ -129,35 +126,6 @@
       nextBtn.addEventListener('click', () => {
         currentPage += 1;
         loadAndRenderPage(currentPage);
-      });
-      fetchAllBtn.addEventListener('click', async () => {
-        const params = getParamsForCurrentInputs();
-        if (!params) return;
-        clearCacheForNewQuery(params.hash);
-        currentPage = 0;
-        updatePageLabel();
-        resultsEl.innerHTML = '<div style="color:var(--muted)">Fetching all pages…</div>';
-        let page = 0;
-        let totalFetched = 0;
-        while (true) {
-          const rows = await fetchPageRows(page, params.fromISO, params.toISO);
-          if (!rows) break;
-          pageCache.set(page, rows);
-          lastFetchedCountForPage.set(page, rows.length);
-          totalFetched += rows.length;
-          if (page === currentPage) renderResultsTable(rows);
-          updatePageLabel();
-          setPagingButtonsState();
-          if (rows.length < pageSize) break;
-          page += 1;
-        }
-        currentPage = 0;
-        loadAndRenderPage(currentPage);
-        const note = document.createElement('div');
-        note.style.color = 'var(--muted)';
-        note.style.marginTop = '6px';
-        note.textContent = `Fetched ${totalFetched} rows across ${page + 1} pages (pageSize=${pageSize}).`;
-        resultsEl.appendChild(note);
       });
 
       // start hidden until results exist

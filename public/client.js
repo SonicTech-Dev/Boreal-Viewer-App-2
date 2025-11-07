@@ -98,13 +98,18 @@
     }
   }
 
-  // Local time updater (shows device-local date/time)
+  // Local time updater (shows device-local date/time) in DD/MM/YYYY HH:MM:SS
+  function pad(n) { return String(n).padStart(2, '0'); }
   function updateLocalTime() {
     if (!localTimeEl) return;
     const now = new Date();
-    // Use the device's locale/timezone representation (simple, matches user's device)
-    // Example format: "11/7/2025, 12:22:18 PM" depending on locale
-    localTimeEl.textContent = now.toLocaleString();
+    const day = pad(now.getDate());
+    const month = pad(now.getMonth() + 1);
+    const year = now.getFullYear();
+    const hours = pad(now.getHours());
+    const minutes = pad(now.getMinutes());
+    const seconds = pad(now.getSeconds());
+    localTimeEl.textContent = `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
   }
   // Update immediately and every second
   updateLocalTime();

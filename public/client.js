@@ -10,6 +10,7 @@
   const localTimeEl = document.getElementById('local-time');
   const tilesContainer = document.getElementById('tiles');
   const feedEl = document.getElementById('feed');
+  const resultsEl = document.getElementById('results'); // query results container
 
   // Tile key mappings and variants
   const KEYS = [
@@ -63,7 +64,7 @@
     });
   }
 
-  // Update tiles
+  // Update tiles (applies R2 / 100 transformation only for display)
   function updateTiles() {
     KEYS.forEach(k => {
       const info = latest[k.label];
@@ -85,7 +86,6 @@
         if (k.label === 'R2') {
           const n = Number(info.value);
           if (!Number.isNaN(n)) displayValue = n / 100;
-          // if not numeric, leave as-is (will be string)
         }
 
         const display = (typeof displayValue === 'number' && !Number.isInteger(displayValue)) ? displayValue.toFixed(2) : String(displayValue);
@@ -232,6 +232,77 @@
     });
   }
   wireSelectionHandlers();
+
+  // --- Results count logic ---
+  // Adds/updates a small count display under the results table indicating total rows returned by query.
+  // Works without changing your existing query-client.js by watching #results for a table being inserted/updated.
+
+  // Create or update the count element under #results
+  function setResultsCount(count) {
+    if (!resultsEl) return;
+    let countEl = document.getElementById('results-count');
+    if (!countEl) {
+      countEl = document.createElement('div');
+      countEl.id = 'results-count';
+      countEl.style.marginTop = '8px';
+      countEl.style.color = 'var(--muted)';
+      countEl.style.fontSize = '13px';
+      resultsEl.appendChild(countEl);
+    }
+    countEl.textContent = `Total entries: ${count.toLocaleString()}`;
+  }
+
+  // Compute number of data rows in the results table
+  function computeResultsRowCount() {
+    if (!resultsEl) return 0;
+    // Find table.table inside results
+    const table = resultsEl.querySelector('table.table');
+    if (!table) return 0;
+    // Prefer tbody rows if present
+    const tbody = table.querySelector('tbody');
+    if (tbody) {
+      return tbody.querySelectorAll('tr').length;
+    }
+    // Otherwise count tr excluding thead header row(s)
+    const allRows = table.querySelectorAll('tr');
+    // subtract header rows (if thead exists use its rows count)
+    const thead = table.querySelector('thead');
+    if (thead) {
+      const headerRows = thead.querySelectorAll('tr').length;
+      return Math.max(0, allRows.length - headerRows);
+    }
+    // fallback: assume first row is header
+    return Math.max(0, allRows.length - 1);
+  }
+
+  // Run a one-time count update (useful after query completes)
+  function updateResultsCountNow() {
+    const count = computeResultsRowCount();
+    setResultsCount(count);
+  }
+
+  // Observe mutations inside #results and update count when table changes
+  if (resultsEl) {
+    const mo = new MutationObserver((mutationsList) => {
+      // If any childList mutation occurred, recompute the count.
+      // Debounce briefly to allow the table to be fully inserted/updated.
+      let relevant = false;
+      for (const m of mutationsList) {
+        if (m.type === 'childList' || m.type === 'subtree' || m.type === 'attributes') {
+          relevant = true;
+          break;
+        }
+      }
+      if (relevant) {
+        // small debounce
+        clearTimeout(window.__results_count_timer__);
+        window.__results_count_timer__ = setTimeout(updateResultsCountNow, 120);
+      }
+    });
+    mo.observe(resultsEl, { childList: true, subtree: true, attributes: false });
+    // Initial run in case results already present
+    setTimeout(updateResultsCountNow, 200);
+  }
 
   // Handle incoming mqtt messages: update tiles and feed
   socket.on('mqtt_message', (msg) => {

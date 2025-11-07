@@ -176,6 +176,49 @@
     }
   })();
 
+  // --- Selection styling for Query + preset buttons ---
+  // Visual selection: use var(--success) (light green) for selected background and dark text.
+  const selectionGroupSelector = '#fetch, .btn.preset';
+  function clearSelectionStyles() {
+    const all = document.querySelectorAll(selectionGroupSelector);
+    all.forEach(el => {
+      el.classList.remove('selected');
+      // remove inline styles we set earlier
+      el.style.background = '';
+      el.style.color = '';
+      el.style.boxShadow = '';
+    });
+  }
+  function applySelectionStyle(el) {
+    clearSelectionStyles();
+    if (!el) return;
+    el.classList.add('selected');
+    // apply visible selected style (use CSS variables to match theme)
+    el.style.background = 'var(--success)';
+    el.style.color = '#042';
+    el.style.boxShadow = '0 6px 14px rgba(16,185,129,0.12)';
+  }
+
+  // Attach click handlers to the group (presets + Query)
+  function wireSelectionHandlers() {
+    const elems = document.querySelectorAll(selectionGroupSelector);
+    elems.forEach(el => {
+      // preserve any existing onclick handlers — we only decorate
+      el.addEventListener('click', (ev) => {
+        // If the clicked element is the already-selected one, keep it selected.
+        // Otherwise, set new selection (single-select behavior).
+        if (!el.classList.contains('selected')) {
+          applySelectionStyle(el);
+        }
+        // allow other click logic (e.g., fetch handling) to proceed
+      });
+    });
+  }
+
+  // Initial wiring (buttons exist in DOM when this script runs)
+  wireSelectionHandlers();
+  // --- end selection logic ---
+
   // Handle incoming mqtt messages: extract LoS fields and update tiles + feed
   socket.on('mqtt_message', (msg) => {
     const ts = msg.received_at || new Date().toISOString();

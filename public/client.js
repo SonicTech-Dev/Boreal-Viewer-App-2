@@ -317,10 +317,23 @@
 
   // Run a one-time count update (useful after query completes)
   function updateResultsCountNow() {
-    const count = computeResultsRowCount();
+    // Read the authoritative total that your query script sets. Many inline scripts use:
+    //   let rowtotal = 0;  // top-level let in the page script
+    // That identifier is accessible via `typeof rowtotal !== "undefined"` in other page scripts
+    // (unless the query script is a module/closure). Use that first so we pick up the true total.
+    let totalAll = 0;
+    if (typeof rowtotal !== 'undefined' && typeof rowtotal === 'number') {
+      totalAll = rowtotal;
+    } else if (typeof window.rowtotal !== 'undefined' && typeof window.rowtotal === 'number') {
+      totalAll = window.rowtotal;
+    } else {
+      // If the page did not expose rowtotal as a numeric value, show 0 (do not count visible rows).
+      totalAll = 0;
+    }
+
     // remove the Fetch all button if present (we replace it with the visible count)
     removeFetchAllButtonIfPresent();
-    setResultsCount(count);
+    setResultsCount(totalAll);
   }
 
   // Observe mutations inside #results and update count when table changes

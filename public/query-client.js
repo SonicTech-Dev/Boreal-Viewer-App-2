@@ -33,6 +33,9 @@
   let lastFetchedCountForPage = new Map(); // pageIndex -> rows.length
   let lastRequestParamsHash = ''; // used to detect param change and clear cache
 
+  // Total-scan control: avoid concurrent total scans for different queries
+  let totalScanInProgressForHash = null;
+
   // Helper: format date for datetime-local input
   function isoLocalString(d) {
     const pad = (n) => String(n).padStart(2,'0');
@@ -305,6 +308,9 @@
       hidePagingControls();
       updatePageLabel();
       setPagingButtonsState();
+      // reset authoritative total when clearing results
+      try { window.rowtotal = 0; } catch (e) { /* ignore */ }
+      totalScanInProgressForHash = null;
     });
   }
 
@@ -373,6 +379,8 @@
       renderResultsTable(pageCache.get(pageIndex));
       updatePageLabel();
       setPagingButtonsState();
+      // kick off background total scan (if not in progress)
+      startTotalScanForParamsIfNeeded(params);
       return;
     }
 
@@ -398,6 +406,9 @@
     renderResultsTable(rows);
     updatePageLabel();
     setPagingButtonsState();
+
+    // Start scanning to compute authoritative total for the current query (background)
+    startTotalScanForParamsIfNeeded(params);
   }
 
   // Performs the actual fetch for a page index. Returns rows[] or null on error.
@@ -453,6 +464,9 @@
     hidePagingControls();
     updatePageLabel();
     setPagingButtonsState();
+    // reset authoritative total for a new query
+    try { window.rowtotal = 0; } catch (e) { /* ignore */ }
+    totalScanInProgressForHash = null;
   }
 
   function updatePageLabel() {
@@ -541,6 +555,126 @@
 
     // Show paging/utility controls now that we have results
     showPagingControls();
+  }
+
+  // Start a background total scan for the given params (if not already running for same params)
+  function startTotalScanForParamsIfNeeded(params) {
+    if (!params || !params.hash) return;
+    if (totalScanInProgressForHash === params.hash) return; // already scanning for this query
+    totalScanInProgressForHash = params.hash;
+
+    // Set an immediate interim total from cached pages so UI doesn't show 0.
+    // This ensures the "Total Count" updates immediately (even while the full scan runs).
+    try {
+      let interim = 0;
+      const cachedPages = Array.from(pageCache.keys()).sort((a,b) => a - b);
+      for (const p of cachedPages) {
+        const arr = pageCache.get(p) || [];
+        interim += arr.length;
+      }
+      // if we have no cached pages, interim remains 0 (that's fine)
+      window.rowtotal = Number(interim) || 0;
+      pokeResultsForRowTotal();
+    } catch (e) {
+      try { window.rowtotal = 0; } catch (e2) { /* ignore */ }
+    }
+
+    // run asynchronously (no await here — fire and forget)
+    (async () => {
+      try {
+        const total = await computeTotalRowsForQuery(params);
+        // expose result on window so client.js can use it
+        try { window.rowtotal = Number(total) || 0; } catch (e) { /* ignore */ }
+        // trigger a tiny DOM add/remove to ensure client.js mutation observer notices the update
+        pokeResultsForRowTotal();
+      } catch (e) {
+        console.error('computeTotalRowsForQuery error', e);
+        try { window.rowtotal = 0; } catch (e2) { /* ignore */ }
+        pokeResultsForRowTotal();
+      } finally {
+        // mark done
+        if (totalScanInProgressForHash === params.hash) totalScanInProgressForHash = null;
+      }
+    })();
+  }
+
+  // Compute total authoritative row count for current query by scanning pages until a short page is found.
+  // This function intentionally does NOT modify UI state except setting window.rowtotal.
+  async function computeTotalRowsForQuery(params) {
+    // Sum lengths of any already cached pages
+    let sum = 0;
+    const cachedPages = Array.from(pageCache.keys()).sort((a,b) => a - b);
+    for (const p of cachedPages) {
+      const arr = pageCache.get(p) || [];
+      sum += arr.length;
+    }
+
+    // If no cached pages exist, attempt to fetch page 0 to seed
+    if (cachedPages.length === 0) {
+      const first = await fetchPageRows(0, params.fromISO, params.toISO);
+      if (first === null) return 0; // error -> treat as 0
+      // store and include
+      pageCache.set(0, first);
+      lastFetchedCountForPage.set(0, first.length);
+      sum += first.length;
+      // if this page is short, it's the only page
+      if (first.length < pageSize) return sum;
+    }
+
+    // Start scanning from highest cached page + 1
+    let start = (cachedPages.length === 0) ? 1 : (cachedPages[cachedPages.length - 1] + 1);
+    // If cachedPages included some pages but we just fetched page 0 above, recompute start
+    const allCached = Array.from(pageCache.keys()).sort((a,b) => a - b);
+    if (allCached.length > 0) {
+      start = allCached[allCached.length - 1] + 1;
+    }
+
+    // Cap number of pages to probe to avoid runaway requests
+    const MAX_PAGES_TO_SCAN = 10000; // very high cap; adjust if needed
+    for (let p = start, scans = 0; scans < MAX_PAGES_TO_SCAN; p++, scans++) {
+      const rows = await fetchPageRows(p, params.fromISO, params.toISO);
+      if (rows === null) {
+        // on error, stop and return current sum (partial)
+        break;
+      }
+      pageCache.set(p, rows);
+      lastFetchedCountForPage.set(p, rows.length);
+      sum += rows.length;
+      // If this page is short, we've reached the last page -> done
+      if (rows.length < pageSize) {
+        return sum;
+      }
+      // otherwise continue scanning
+    }
+
+    // If we reach here we scanned the cap without finding a short page — return the partial sum.
+    return sum;
+  }
+
+  // When rowtotal is updated, client.js listens to mutations in #results. To ensure it notices
+  // the new window.rowtotal value even if results DOM didn't change, perform a tiny add/remove
+  // child mutation on resultsEl (invisible marker). This triggers the client's MutationObserver.
+  function pokeResultsForRowTotal() {
+    try {
+      if (!resultsEl) return;
+      const id = '__rowtotal_marker__';
+      // ensure any previous marker removed
+      const prev = document.getElementById(id);
+      if (prev && prev.parentNode) prev.parentNode.removeChild(prev);
+
+      const marker = document.createElement('div');
+      marker.id = id;
+      marker.style.display = 'none';
+      // append then remove next tick to generate childList mutations
+      resultsEl.appendChild(marker);
+      setTimeout(() => {
+        try {
+          if (marker.parentNode) marker.parentNode.removeChild(marker);
+        } catch (e) { /* ignore */ }
+      }, 0);
+    } catch (e) {
+      // ignore
+    }
   }
 
   // Expose for debugging in console if needed

@@ -1,5 +1,5 @@
 // query-client.js — full-featured query UI: presets, fetch, clear, CSV export.
-// Pagination: pageSize 2000 with Prev/Next/Fetch All. Controls shown only after results.
+// Pagination: pageSize 2000 with Prev/Next/First/Last. Controls shown only after results.
 // Fixed issues that could stop scripts from running (robust null checks, no accidental runtime errors).
 // Uses recorded_at_str if provided by server, otherwise falls back to recorded_at.
 //
@@ -70,6 +70,13 @@
       pagingControlsEl.style.display = 'flex';
       // We'll hide it right after if no results. The element exists; display toggled by show/hide.
 
+      // FIRST page button
+      const firstBtn = document.createElement('button');
+      firstBtn.className = 'btn';
+      firstBtn.textContent = 'First';
+      firstBtn.id = 'page-first';
+      firstBtn.disabled = true;
+
       const prevBtn = document.createElement('button');
       prevBtn.className = 'btn secondary';
       prevBtn.textContent = 'Prev';
@@ -87,19 +94,26 @@
       nextBtn.id = 'page-next';
       nextBtn.disabled = true;
 
-      // NOTE: Fetch All button removed as requested.
+      // LAST page button
+      const lastBtn = document.createElement('button');
+      lastBtn.className = 'btn';
+      lastBtn.textContent = 'Last';
+      lastBtn.id = 'page-last';
+      lastBtn.disabled = true;
 
+      // append controls in order: First, Prev, Label, Next, Last
+      pagingControlsEl.appendChild(firstBtn);
       pagingControlsEl.appendChild(prevBtn);
       pagingControlsEl.appendChild(pageLabel);
       pagingControlsEl.appendChild(nextBtn);
-      // (Fetch All omitted)
+      pagingControlsEl.appendChild(lastBtn);
 
       // spacer so moved buttons align to right
       const spacer = document.createElement('div');
       spacer.style.flex = '1';
       pagingControlsEl.appendChild(spacer);
 
-      // move Clear and CSV only if they exist and are not already inside the paging bar
+      // move Clear and CSV only if they exist and are not already in the paging bar
       if (exportCsvBtn && exportCsvBtn.parentNode !== pagingControlsEl) {
         pagingControlsEl.appendChild(exportCsvBtn);
       }
@@ -117,6 +131,14 @@
       }
 
       // Event handlers for the paging buttons (safe guards if buttons missing)
+      firstBtn.addEventListener('click', () => {
+        // Jump to first page (0)
+        if (currentPage !== 0) {
+          currentPage = 0;
+          loadAndRenderPage(currentPage);
+        }
+      });
+
       prevBtn.addEventListener('click', () => {
         if (currentPage > 0) {
           currentPage -= 1;
@@ -125,6 +147,107 @@
       });
       nextBtn.addEventListener('click', () => {
         currentPage += 1;
+        loadAndRenderPage(currentPage);
+      });
+
+      lastBtn.addEventListener('click', async () => {
+        // Aggressive: auto-fetch forward until we find a short page (< pageSize)
+        // or until the server returns an empty page. Safety cap included.
+        const params = getParamsForCurrentInputs();
+        if (!params) return;
+
+        // Ensure we have at least page 0 cached (so we can determine where to start)
+        if (!pageCache.has(0)) {
+          const firstRows = await fetchPageRows(0, params.fromISO, params.toISO);
+          if (firstRows === null) return; // error
+          pageCache.set(0, firstRows);
+          lastFetchedCountForPage.set(0, firstRows.length);
+          if (firstRows.length === 0) {
+            // no results at all
+            currentPage = 0;
+            loadAndRenderPage(0);
+            return;
+          }
+        }
+
+        // Start from highest known cached page + 1
+        let cached = Array.from(pageCache.keys()).sort((a,b) => a - b);
+        let start = (cached.length === 0) ? 0 : (cached[cached.length - 1] + 1);
+        // If start is 0 and we already have page 0 cached and it's short, use it
+        if (start === 0) {
+          const c0 = lastFetchedCountForPage.get(0);
+          if (typeof c0 === 'number' && c0 < pageSize) {
+            currentPage = 0;
+            loadAndRenderPage(currentPage);
+            return;
+          }
+        }
+
+        // Provide UI feedback
+        const prevContent = resultsEl ? resultsEl.innerHTML : null;
+        if (resultsEl) resultsEl.innerHTML = `<div style="color:var(--muted)">Locating last page…</div>`;
+
+        // Safety cap to avoid infinite loops; you can increase if needed.
+        const MAX_PAGES_TO_SCAN = 2000;
+        let p = start;
+        let found = false;
+
+        for (; p < start + MAX_PAGES_TO_SCAN; p++) {
+          // If already cached, reuse
+          if (pageCache.has(p)) {
+            const rowsCached = pageCache.get(p) || [];
+            lastFetchedCountForPage.set(p, rowsCached.length);
+            if (rowsCached.length === 0) {
+              // empty page => last page is p-1 (if exists)
+              currentPage = Math.max(0, p - 1);
+              found = true;
+              break;
+            }
+            if (rowsCached.length < pageSize) {
+              currentPage = p;
+              found = true;
+              break;
+            }
+            // otherwise full page, continue to next
+            continue;
+          }
+
+          // Fetch this page
+          const rows = await fetchPageRows(p, params.fromISO, params.toISO);
+          if (rows === null) {
+            // error fetching; stop and fallback to highest cached page
+            break;
+          }
+          pageCache.set(p, rows);
+          lastFetchedCountForPage.set(p, rows.length);
+
+          if (rows.length === 0) {
+            // no rows for this page -> last page is p-1
+            currentPage = Math.max(0, p - 1);
+            found = true;
+            break;
+          }
+          if (rows.length < pageSize) {
+            // found final (partial) page
+            currentPage = p;
+            found = true;
+            break;
+          }
+          // otherwise full page -> continue loop to probe next page
+        }
+
+        if (!found) {
+          // didn't find a short page within cap; fall back to highest cached page
+          const allCached = Array.from(pageCache.keys());
+          if (allCached.length > 0) {
+            allCached.sort((a,b) => a - b);
+            currentPage = allCached[allCached.length - 1];
+          } else {
+            currentPage = 0;
+          }
+        }
+
+        // load the decided page (will use cache if available)
         loadAndRenderPage(currentPage);
       });
 
@@ -342,13 +465,19 @@
   function setPagingButtonsState() {
     const prevBtn = document.getElementById('page-prev');
     const nextBtn = document.getElementById('page-next');
+    const firstBtn = document.getElementById('page-first');
+    const lastBtn = document.getElementById('page-last');
     if (!prevBtn || !nextBtn) return;
     prevBtn.disabled = currentPage <= 0;
+    if (firstBtn) firstBtn.disabled = currentPage <= 0;
+
     const curCount = lastFetchedCountForPage.get(currentPage);
     if (typeof curCount === 'number' && curCount < pageSize) {
       nextBtn.disabled = true;
+      if (lastBtn) lastBtn.disabled = true;
     } else {
       nextBtn.disabled = false;
+      if (lastBtn) lastBtn.disabled = false;
     }
   }
 

@@ -90,7 +90,10 @@
 
         const display = (typeof displayValue === 'number' && !Number.isInteger(displayValue)) ? displayValue.toFixed(2) : String(displayValue);
         valueEl.textContent = display;
-        metaEl.textContent = info.updated_at ? ('updated: ' + new Date(info.updated_at).toLocaleTimeString()) : 'No data';
+
+        // Completely remove the timestamp from the tile meta (no "updated:" text).
+        metaEl.textContent = '';
+
         if (popupVal) popupVal.textContent = display;
         if (popupTime) popupTime.textContent = info.updated_at ? ('at ' + new Date(info.updated_at).toLocaleString()) : '—';
       }

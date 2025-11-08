@@ -184,7 +184,6 @@
         }
 
         // Provide UI feedback
-        const prevContent = resultsEl ? resultsEl.innerHTML : null;
         if (resultsEl) resultsEl.innerHTML = `<div style="color:var(--muted)">Locating last page…</div>`;
 
         // Safety cap to avoid infinite loops; you can increase if needed.
@@ -331,11 +330,11 @@
         return;
       }
 
-      const headers = ['id','recorded_at','los_temp','los_rx_light','los_r2','los_heartbeat','los_ppm'];
+      // CSV headers changed to match visible table labels
+      const headers = ['Recorded_At','Temp','Rx_Light','R2','HeartBeat','PPM'];
       const lines = [headers.join(',')];
       rowsToExport.forEach(r => {
         const vals = [
-          r.id,
           `"${r.recorded_at_str || r.recorded_at || ''}"`,
           r.los_temp ?? '',
           r.los_rx_light ?? '',
@@ -343,6 +342,8 @@
           r.los_heartbeat ?? '',
           r.los_ppm ?? ''
         ];
+        // Escape any commas/newlines in fields by wrapping quoted fields as above for recorded_at
+        // Other numeric fields are left as-is (or empty).
         lines.push(vals.join(','));
       });
       const csv = lines.join('\n');
@@ -505,7 +506,8 @@
     table.className = 'table';
     const thead = document.createElement('thead');
     const headerRow = document.createElement('tr');
-    ['recorded_at','los_temp','los_rx_light','los_r2','los_heartbeat','los_ppm'].forEach(h => {
+    // Updated visible header labels per request:
+    ['Recorded_At','Temp','Rx_Light','R2','HeartBeat','PPM'].forEach(h => {
       const th = document.createElement('th');
       th.textContent = h;
       headerRow.appendChild(th);

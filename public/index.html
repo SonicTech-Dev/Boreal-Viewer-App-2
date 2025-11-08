@@ -42,7 +42,7 @@
     }
     .brand { display:flex; align-items:center; gap:14px; position:absolute; left:20px; } /* keep logo at left */
     .logo {
-      width:260px;height:90px;border-radius:8px; overflow:hidden;
+      width:320px;height:90px;border-radius:8px; overflow:hidden;
       display:flex;align-items:center;justify-content:center;font-weight:700;color:#042;
       flex-shrink:0;
       background:transparent;
@@ -207,7 +207,7 @@
         margin-bottom:8px;
       }
       .logo {
-        width:180px;
+        width:220px;
         height:48px;
       }
       .title {
@@ -239,7 +239,7 @@
     @media (max-width:420px){
       header.app-header { padding:10px; }
       .brand { display:flex; align-items:center; gap:10px; }
-      .logo { width:130px; height:40px; }
+      .logo { width:160px; height:40px; }
       .title h1 { font-size:16px; }
       .title .subtitle { font-size:11px; }
       .hero img { max-width:260px; }
@@ -290,7 +290,6 @@
       <div class="hero" aria-hidden="false">
         <!-- laser image from public/static/laser.png -->
         <img src="/Static/Laser.png" alt="Laser photo" id="hero-image" />
-        <div class="caption">CH4 Measurement Laser (visual)</div>
       </div>
 
       <div class="tiles" id="tiles"><!-- tiles injected by client.js --></div>

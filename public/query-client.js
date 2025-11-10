@@ -3,15 +3,12 @@
 // Fixed issues that could stop scripts from running (robust null checks, no accidental runtime errors).
 // Uses recorded_at_str if provided by server, otherwise falls back to recorded_at.
 //
-// Summary of fixes in this version (why your presets/fetch might have stopped working):
-// - Added robust checks around DOM manipulation in injectPagingControls so an unexpected
-//   null parent or moving nodes doesn't throw and abort the rest of the script.
-// - Removed the stray double-assignment to pagingControlsEl.style.display that previously
-//   set display to 'none' then immediately to 'flex' (harmless but confusing).
-// - Only move Clear/CSV buttons when they exist and are not already in the paging bar.
-// - All event listeners (presets, fetch, clear, export) are attached after DOM elements
-//   are known to exist. Any error in injection is caught and logged but won't stop the rest.
-// - show/hide paging controls use explicit checks and do not accidentally break other UI code.
+// SUMMARY OF CHANGE:
+// - The only change in this file is how the "Recorded_At" cell is rendered.
+// - It now converts the backend-provided timestamp into the local device time and
+//   displays it in a simple human-readable format: "DD/MM/YYYY HH:MM:SS".
+// - Preference order for parsing: recorded_at (ISO) -> recorded_at_raw -> recorded_at_str.
+// - If parsing fails, the original string is shown unchanged.
 
 (function () {
   const fetchBtn = document.getElementById('fetch');
@@ -45,6 +42,72 @@
     const hh = pad(d.getHours());
     const min = pad(d.getMinutes());
     return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+  }
+
+  // -------------------------
+  // Parsing & Local Formatting
+  // -------------------------
+  // Parse various backend timestamp formats into a JS Date if possible.
+  // - Prefer ISO-like strings and numeric epochs (seconds or ms).
+  // - Returns a Date object or null if parsing fails.
+  function parseToDate(val) {
+    if (val === null || val === undefined || val === '') return null;
+    // Already a Date
+    if (val instanceof Date && !isNaN(val.getTime())) return val;
+    // Number
+    if (typeof val === 'number' && Number.isFinite(val)) {
+      // > 1e12 -> ms, > 1e9 -> seconds
+      if (val > 1e12) return new Date(val);
+      if (val > 1e9) return new Date(val * 1000);
+      return null;
+    }
+    // String
+    if (typeof val === 'string') {
+      const s = val.trim();
+      if (!s) return null;
+      // Pure numeric string -> epoch
+      if (/^\d+$/.test(s)) {
+        const n = Number(s);
+        if (n > 1e12) return new Date(n);
+        if (n > 1e9) return new Date(n * 1000);
+        // else continue to parse
+      }
+      // Try Date.parse (handles ISO and many other formats)
+      const parsed = Date.parse(s);
+      if (!Number.isNaN(parsed)) {
+        return new Date(parsed);
+      }
+      // Try replacing space with 'T' (common "YYYY-MM-DD HH:MM:SS")
+      const alt = s.replace(' ', 'T');
+      const parsed2 = Date.parse(alt);
+      if (!Number.isNaN(parsed2)) return new Date(parsed2);
+      return null;
+    }
+    // Other types cannot be parsed
+    return null;
+  }
+
+  // Format a Date object in local timezone as "DD/MM/YYYY HH:MM:SS"
+  function pad2(v) { return String(v).padStart(2,'0'); }
+  function formatDateLocal(d) {
+    const day = pad2(d.getDate());
+    const month = pad2(d.getMonth() + 1);
+    const year = d.getFullYear();
+    const hours = pad2(d.getHours());
+    const minutes = pad2(d.getMinutes());
+    const seconds = pad2(d.getSeconds());
+    return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+  }
+
+  // Convert backend value to a local display string. Preference:
+  // 1) recorded_at (ISO) -> parse and show in local time
+  // 2) recorded_at_raw (verbatim) -> try parse and show in local time; else show raw
+  // 3) recorded_at_str (server-formatted) -> try parse and show in local time; else show raw
+  function toLocalDisplay(val) {
+    if (val === null || val === undefined || val === '') return '';
+    const dt = parseToDate(val);
+    if (dt) return formatDateLocal(dt);
+    try { return String(val); } catch (e) { return ''; }
   }
 
   // Init defaults: populate inputs with last 1 hour
@@ -534,7 +597,10 @@
       const tr = document.createElement('tr');
       const tdTime = document.createElement('td');
       tdTime.className = 'nowrap';
-      tdTime.textContent = row.recorded_at_str || row.recorded_at || '';
+      // Convert server timestamp to local device time for display.
+      // Prefer recorded_at (ISO) -> recorded_at_raw -> recorded_at_str.
+      const sourceVal = row.recorded_at || row.recorded_at_raw || row.recorded_at_str || '';
+      tdTime.textContent = toLocalDisplay(sourceVal);
       tr.appendChild(tdTime);
 
       const addCell = (val) => {

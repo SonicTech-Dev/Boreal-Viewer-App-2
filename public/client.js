@@ -2,6 +2,40 @@
 // Full feature set restored: hover popups, real-time feed, status dot/label.
 
 (function () {
+  // VISUAL-ONLY CHANGE (no functional changes):
+  // Inject a tiny stylesheet that increases the visible size of the status label text
+  // and enlarges the status dot. This only affects visuals and does not touch behavior.
+  try {
+    const _s = document.createElement('style');
+    _s.id = 'status-visuals';
+    _s.textContent = `
+      /* Larger status label and dot (desktop) */
+      #status-label {
+        font-size: 16px !important;
+        font-weight: 800 !important;
+        letter-spacing: 0.2px;
+      }
+      #status-dot {
+        width: 26px !important;
+        height: 26px !important;
+        border-radius: 50% !important;
+      }
+
+      /* Slightly scaled down on small screens to avoid layout issues */
+      @media (max-width: 800px) {
+        #status-label { font-size: 15px !important; }
+        #status-dot { width: 24px !important; height: 24px !important; }
+      }
+      @media (max-width: 420px) {
+        #status-label { font-size: 13px !important; }
+        #status-dot { width: 18px !important; height: 18px !important; }
+      }
+    `;
+    document.head && document.head.appendChild(_s);
+  } catch (e) {
+    // ignore style injection failures — purely visual
+  }
+
   // public/client.js
   // Shows simple Online/Offline based solely on server ping results (device_status)
   const socket = io();

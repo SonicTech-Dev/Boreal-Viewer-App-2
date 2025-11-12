@@ -1,14 +1,13 @@
+// V4 — Copilot workbench rewrite
 // query-client.js — full-featured query UI: presets, fetch, clear, CSV export.
 // Pagination: pageSize 2000 with Prev/Next/First/Last. Controls shown only after results.
 // Fixed issues that could stop scripts from running (robust null checks, no accidental runtime errors).
 // Uses recorded_at_str if provided by server, otherwise falls back to recorded_at.
 //
-// SUMMARY OF CHANGE:
-// - The only change in this file is how the "Recorded_At" cell is rendered.
-// - It now converts the backend-provided timestamp into the local device time and
-//   displays it in a simple human-readable format: "DD/MM/YYYY HH:MM:SS".
-// - Preference order for parsing: recorded_at (ISO) -> recorded_at_raw -> recorded_at_str.
-// - If parsing fails, the original string is shown unchanged.
+// NOTE: Adds a polished, read-only 24-hour preview next to the "From" and "To"
+// datetime-local inputs. Styling is contained here (injected) and spacing is generous
+// so the two formats are visually distinct and not confusing. No other page markup
+// or behavior is changed.
 
 (function () {
   const fetchBtn = document.getElementById('fetch');
@@ -19,6 +18,148 @@
   const presets = document.querySelectorAll('.preset');
   const clearResultsBtn = document.getElementById('clear-results');
   const exportCsvBtn = document.getElementById('export-csv');
+
+  // --- 24-hour preview helpers (polished look) ---
+  function pad2(v) { return String(v).padStart(2, '0'); }
+
+  function formatDateTo24Short(d) {
+    if (!(d instanceof Date) || isNaN(d.getTime())) return '';
+    const day = pad2(d.getDate());
+    const month = pad2(d.getMonth() + 1);
+    const year = d.getFullYear();
+    const hours = pad2(d.getHours());
+    const minutes = pad2(d.getMinutes());
+    return `${day}/${month}/${year} ${hours}:${minutes}`;
+  }
+
+  function formatInputValueTo24(val) {
+    if (!val) return '';
+    // datetime-local string is local; constructing Date(val) treats it as local in most browsers
+    const d = new Date(val);
+    if (isNaN(d.getTime())) return '';
+    return formatDateTo24Short(d);
+  }
+
+  // inject styles for preview (only once)
+  (function injectPreviewStyles() {
+    if (document.getElementById('__dt24_preview_styles__')) return;
+    const css = `
+      .dt24-preview {
+        margin-left: 12px;
+        color: var(--muted);
+        background: rgba(255,255,255,0.02);
+        border: 1px solid rgba(255,255,255,0.03);
+        padding: 5px 10px;
+        font-size: 13px;
+        border-radius: 8px;
+        display: inline-block;
+        min-width: 170px;
+        text-align: left;
+        user-select: none;
+        pointer-events: none;
+        box-shadow: 0 6px 14px rgba(2,6,23,0.35);
+      }
+
+      /* extra separation specifically when the preview follows the FROM input */
+      .dt24-preview.dt24-preview--from {
+        margin-right: 40px; /* visual gap between FROM block and TO block */
+      }
+
+      /* Slightly smaller on very small screens */
+      @media (max-width:800px) {
+        .dt24-preview {
+          min-width: 140px;
+          padding: 4px 8px;
+          margin-left: 10px;
+        }
+        .dt24-preview.dt24-preview--from {
+          margin-right: 20px;
+        }
+      }
+      @media (max-width:420px) {
+        .dt24-preview { font-size:12px; min-width: 120px; padding:4px 8px; margin-left:8px; }
+        .dt24-preview.dt24-preview--from { margin-right: 8px; display:block; margin-top:6px; }
+      }
+    `;
+    const s = document.createElement('style');
+    s.id = '__dt24_preview_styles__';
+    s.type = 'text/css';
+    s.appendChild(document.createTextNode(css));
+    (document.head || document.documentElement).appendChild(s);
+  })();
+
+  function create24Preview(inputEl) {
+    if (!inputEl) return () => {};
+    // Avoid creating duplicate preview
+    if (inputEl.__dt24_preview_el__) {
+      // return updater
+      return () => {
+        if (inputEl.__dt24_preview_el__) inputEl.__dt24_preview_el__.textContent = formatInputValueTo24(inputEl.value) || '';
+      };
+    }
+
+    const span = document.createElement('span');
+    span.className = 'dt24-preview';
+    // Add special class for the FROM input so we can give a larger right margin (visual only)
+    if (inputEl.id === 'from' || inputEl === fromInput) {
+      span.classList.add('dt24-preview--from');
+    }
+    span.setAttribute('aria-hidden', 'true');
+    span.textContent = formatInputValueTo24(inputEl.value) || '';
+
+    // Insert after the input element
+    if (inputEl.parentNode) {
+      // prefer inserting after input so it sits visually next to it
+      if (inputEl.nextSibling) inputEl.parentNode.insertBefore(span, inputEl.nextSibling);
+      else inputEl.parentNode.appendChild(span);
+    } else {
+      // fallback: append to body (shouldn't normally happen)
+      document.body.appendChild(span);
+    }
+
+    // updater
+    const upd = () => {
+      try {
+        span.textContent = formatInputValueTo24(inputEl.value) || '';
+      } catch (e) { /* ignore */ }
+    };
+
+    // wire events
+    inputEl.addEventListener('input', upd);
+    inputEl.addEventListener('change', upd);
+
+    // store reference and return updater
+    inputEl.__dt24_preview_el__ = span;
+    return upd;
+  }
+
+  // Create previews and keep updater functions
+  const updateFromPreview = create24Preview(fromInput);
+  const updateToPreview = create24Preview(toInput);
+
+  // Ensure previews update on user interactions that change inputs
+  if (fromInput) {
+    fromInput.addEventListener('input', () => {
+      try { updateFromPreview(); } catch (e) { /* ignore */ }
+    });
+    fromInput.addEventListener('change', () => {
+      try { updateFromPreview(); } catch (e) { /* ignore */ }
+    });
+  }
+  if (toInput) {
+    toInput.addEventListener('input', () => {
+      try { updateToPreview(); } catch (e) { /* ignore */ }
+    });
+    toInput.addEventListener('change', () => {
+      try { updateToPreview(); } catch (e) { /* ignore */ }
+    });
+  }
+
+  // Update previews when presets, init defaults, or fetch actions modify values
+  function safeUpdatePreviews() {
+    try { updateFromPreview(); } catch (e) { /* ignore */ }
+    try { updateToPreview(); } catch (e) { /* ignore */ }
+  }
 
   // Pagination UI will be injected dynamically below the results
   let pagingControlsEl = null;
@@ -47,48 +188,32 @@
   // -------------------------
   // Parsing & Local Formatting
   // -------------------------
-  // Parse various backend timestamp formats into a JS Date if possible.
-  // - Prefer ISO-like strings and numeric epochs (seconds or ms).
-  // - Returns a Date object or null if parsing fails.
   function parseToDate(val) {
     if (val === null || val === undefined || val === '') return null;
-    // Already a Date
     if (val instanceof Date && !isNaN(val.getTime())) return val;
-    // Number
     if (typeof val === 'number' && Number.isFinite(val)) {
-      // > 1e12 -> ms, > 1e9 -> seconds
       if (val > 1e12) return new Date(val);
       if (val > 1e9) return new Date(val * 1000);
       return null;
     }
-    // String
     if (typeof val === 'string') {
       const s = val.trim();
       if (!s) return null;
-      // Pure numeric string -> epoch
       if (/^\d+$/.test(s)) {
         const n = Number(s);
         if (n > 1e12) return new Date(n);
         if (n > 1e9) return new Date(n * 1000);
-        // else continue to parse
       }
-      // Try Date.parse (handles ISO and many other formats)
       const parsed = Date.parse(s);
-      if (!Number.isNaN(parsed)) {
-        return new Date(parsed);
-      }
-      // Try replacing space with 'T' (common "YYYY-MM-DD HH:MM:SS")
+      if (!Number.isNaN(parsed)) return new Date(parsed);
       const alt = s.replace(' ', 'T');
       const parsed2 = Date.parse(alt);
       if (!Number.isNaN(parsed2)) return new Date(parsed2);
       return null;
     }
-    // Other types cannot be parsed
     return null;
   }
 
-  // Format a Date object in local timezone as "DD/MM/YYYY HH:MM:SS"
-  function pad2(v) { return String(v).padStart(2,'0'); }
   function formatDateLocal(d) {
     const day = pad2(d.getDate());
     const month = pad2(d.getMonth() + 1);
@@ -99,10 +224,6 @@
     return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
   }
 
-  // Convert backend value to a local display string. Preference:
-  // 1) recorded_at (ISO) -> parse and show in local time
-  // 2) recorded_at_raw (verbatim) -> try parse and show in local time; else show raw
-  // 3) recorded_at_str (server-formatted) -> try parse and show in local time; else show raw
   function toLocalDisplay(val) {
     if (val === null || val === undefined || val === '') return '';
     const dt = parseToDate(val);
@@ -110,33 +231,29 @@
     try { return String(val); } catch (e) { return ''; }
   }
 
-  // Init defaults: populate inputs with last 1 hour
+  // Init defaults: populate inputs with last 1 hour and update previews
   (function initDefaults() {
     const now = new Date();
     const from = new Date(now.getTime() - 3600 * 1000);
     if (fromInput) fromInput.value = isoLocalString(from);
     if (toInput) toInput.value = isoLocalString(now);
+    safeUpdatePreviews();
   })();
 
   // Inject paging controls UI (below the results element)
   (function injectPagingControls() {
     try {
       const panel = document.getElementById('query-panel');
-      if (!panel || !resultsEl) {
-        // nothing to do; bail gracefully
-        return;
-      }
+      if (!panel || !resultsEl) return;
 
       pagingControlsEl = document.createElement('div');
-      pagingControlsEl.style.display = 'none'; // hidden until results exist
+      pagingControlsEl.style.display = 'none';
       pagingControlsEl.style.alignItems = 'center';
       pagingControlsEl.style.gap = '8px';
       pagingControlsEl.style.marginTop = '8px';
       pagingControlsEl.style.flexWrap = 'wrap';
       pagingControlsEl.style.display = 'flex';
-      // We'll hide it right after if no results. The element exists; display toggled by show/hide.
 
-      // FIRST page button
       const firstBtn = document.createElement('button');
       firstBtn.className = 'btn';
       firstBtn.textContent = 'First';
@@ -160,51 +277,39 @@
       nextBtn.id = 'page-next';
       nextBtn.disabled = true;
 
-      // LAST page button
       const lastBtn = document.createElement('button');
       lastBtn.className = 'btn';
       lastBtn.textContent = 'Last';
       lastBtn.id = 'page-last';
       lastBtn.disabled = true;
 
-      // append controls in order: First, Prev, Label, Next, Last
       pagingControlsEl.appendChild(firstBtn);
       pagingControlsEl.appendChild(prevBtn);
       pagingControlsEl.appendChild(pageLabel);
       pagingControlsEl.appendChild(nextBtn);
       pagingControlsEl.appendChild(lastBtn);
 
-      // spacer so moved buttons align to right
       const spacer = document.createElement('div');
       spacer.style.flex = '1';
       pagingControlsEl.appendChild(spacer);
 
-      // move Clear and CSV only if they exist and are not already in the paging bar
       if (exportCsvBtn && exportCsvBtn.parentNode !== pagingControlsEl) {
         pagingControlsEl.appendChild(exportCsvBtn);
       }
       if (clearResultsBtn && clearResultsBtn.parentNode !== pagingControlsEl) {
-        // ensure Clear has secondary look
         clearResultsBtn.classList.add('secondary');
         pagingControlsEl.appendChild(clearResultsBtn);
       }
 
-      // place paging controls after the results element
-      if (resultsEl && resultsEl.parentNode) {
-        resultsEl.parentNode.insertBefore(pagingControlsEl, resultsEl.nextSibling);
-      } else {
-        panel.appendChild(pagingControlsEl);
-      }
+      if (resultsEl && resultsEl.parentNode) resultsEl.parentNode.insertBefore(pagingControlsEl, resultsEl.nextSibling);
+      else panel.appendChild(pagingControlsEl);
 
-      // Event handlers for the paging buttons (safe guards if buttons missing)
       firstBtn.addEventListener('click', () => {
-        // Jump to first page (0)
         if (currentPage !== 0) {
           currentPage = 0;
           loadAndRenderPage(currentPage);
         }
       });
-
       prevBtn.addEventListener('click', () => {
         if (currentPage > 0) {
           currentPage -= 1;
@@ -217,29 +322,22 @@
       });
 
       lastBtn.addEventListener('click', async () => {
-        // Aggressive: auto-fetch forward until we find a short page (< pageSize)
-        // or until the server returns an empty page. Safety cap included.
         const params = getParamsForCurrentInputs();
         if (!params) return;
-
-        // Ensure we have at least page 0 cached (so we can determine where to start)
         if (!pageCache.has(0)) {
           const firstRows = await fetchPageRows(0, params.fromISO, params.toISO);
-          if (firstRows === null) return; // error
+          if (firstRows === null) return;
           pageCache.set(0, firstRows);
           lastFetchedCountForPage.set(0, firstRows.length);
           if (firstRows.length === 0) {
-            // no results at all
             currentPage = 0;
             loadAndRenderPage(0);
             return;
           }
         }
 
-        // Start from highest known cached page + 1
         let cached = Array.from(pageCache.keys()).sort((a,b) => a - b);
         let start = (cached.length === 0) ? 0 : (cached[cached.length - 1] + 1);
-        // If start is 0 and we already have page 0 cached and it's short, use it
         if (start === 0) {
           const c0 = lastFetchedCountForPage.get(0);
           if (typeof c0 === 'number' && c0 < pageSize) {
@@ -249,21 +347,17 @@
           }
         }
 
-        // Provide UI feedback
         if (resultsEl) resultsEl.innerHTML = `<div style="color:var(--muted)">Locating last page…</div>`;
 
-        // Safety cap to avoid infinite loops; you can increase if needed.
         const MAX_PAGES_TO_SCAN = 2000;
         let p = start;
         let found = false;
 
         for (; p < start + MAX_PAGES_TO_SCAN; p++) {
-          // If already cached, reuse
           if (pageCache.has(p)) {
             const rowsCached = pageCache.get(p) || [];
             lastFetchedCountForPage.set(p, rowsCached.length);
             if (rowsCached.length === 0) {
-              // empty page => last page is p-1 (if exists)
               currentPage = Math.max(0, p - 1);
               found = true;
               break;
@@ -273,53 +367,38 @@
               found = true;
               break;
             }
-            // otherwise full page, continue to next
             continue;
           }
 
-          // Fetch this page
           const rows = await fetchPageRows(p, params.fromISO, params.toISO);
-          if (rows === null) {
-            // error fetching; stop and fallback to highest cached page
-            break;
-          }
+          if (rows === null) break;
           pageCache.set(p, rows);
           lastFetchedCountForPage.set(p, rows.length);
-
           if (rows.length === 0) {
-            // no rows for this page -> last page is p-1
             currentPage = Math.max(0, p - 1);
             found = true;
             break;
           }
           if (rows.length < pageSize) {
-            // found final (partial) page
             currentPage = p;
             found = true;
             break;
           }
-          // otherwise full page -> continue loop to probe next page
         }
 
         if (!found) {
-          // didn't find a short page within cap; fall back to highest cached page
           const allCached = Array.from(pageCache.keys());
           if (allCached.length > 0) {
             allCached.sort((a,b) => a - b);
             currentPage = allCached[allCached.length - 1];
-          } else {
-            currentPage = 0;
-          }
+          } else currentPage = 0;
         }
 
-        // load the decided page (will use cache if available)
         loadAndRenderPage(currentPage);
       });
 
-      // start hidden until results exist
       hidePagingControls();
     } catch (e) {
-      // log and continue; do not let injection errors stop the rest of the script
       console.error('injectPagingControls error', e);
     }
   })();
@@ -342,6 +421,7 @@
         }
         if (fromInput) fromInput.value = isoLocalString(from);
         if (toInput) toInput.value = isoLocalString(now);
+        safeUpdatePreviews();
       });
     });
   }
@@ -353,6 +433,7 @@
       if (!params) return;
       clearCacheForNewQuery(params.hash);
       currentPage = 0;
+      safeUpdatePreviews();
       loadAndRenderPage(currentPage);
     });
   }
@@ -371,7 +452,6 @@
       hidePagingControls();
       updatePageLabel();
       setPagingButtonsState();
-      // reset authoritative total when clearing results
       try { window.rowtotal = 0; } catch (e) { /* ignore */ }
       totalScanInProgressForHash = null;
     });
@@ -383,9 +463,7 @@
       let rowsToExport = [];
       if (pageCache.size > 1) {
         const pages = Array.from(pageCache.keys()).sort((a,b) => a - b);
-        for (const p of pages) {
-          rowsToExport = rowsToExport.concat(pageCache.get(p) || []);
-        }
+        for (const p of pages) rowsToExport = rowsToExport.concat(pageCache.get(p) || []);
       } else if (pageCache.size === 1) {
         const rows = pageCache.get(currentPage) || pageCache.values().next().value || [];
         rowsToExport = rows.slice();
@@ -433,16 +511,13 @@
     const params = getParamsForCurrentInputs();
     if (!params) return;
 
-    if (params.hash !== lastRequestParamsHash) {
-      clearCacheForNewQuery(params.hash);
-    }
+    if (params.hash !== lastRequestParamsHash) clearCacheForNewQuery(params.hash);
 
     updatePageLabel();
     if (pageCache.has(pageIndex)) {
       renderResultsTable(pageCache.get(pageIndex));
       updatePageLabel();
       setPagingButtonsState();
-      // kick off background total scan (if not in progress)
       startTotalScanForParamsIfNeeded(params);
       return;
     }
@@ -456,7 +531,6 @@
     }
 
     if (rows.length === 0 && pageIndex > 0) {
-      // requested a page beyond end -> step back
       currentPage = pageIndex - 1;
       updatePageLabel();
       setPagingButtonsState();
@@ -469,8 +543,6 @@
     renderResultsTable(rows);
     updatePageLabel();
     setPagingButtonsState();
-
-    // Start scanning to compute authoritative total for the current query (background)
     startTotalScanForParamsIfNeeded(params);
   }
 
@@ -527,7 +599,6 @@
     hidePagingControls();
     updatePageLabel();
     setPagingButtonsState();
-    // reset authoritative total for a new query
     try { window.rowtotal = 0; } catch (e) { /* ignore */ }
     totalScanInProgressForHash = null;
   }
@@ -561,7 +632,6 @@
 
   function hidePagingControls() {
     if (!pagingControlsEl) return;
-    // hide visually but keep in DOM
     try { pagingControlsEl.style.display = 'none'; } catch (e) { /* ignore */ }
   }
   function showPagingControls() {
@@ -583,7 +653,6 @@
     table.className = 'table';
     const thead = document.createElement('thead');
     const headerRow = document.createElement('tr');
-    // Updated visible header labels per request:
     ['Recorded_At','Temp','Rx_Light','R2','HeartBeat','PPM'].forEach(h => {
       const th = document.createElement('th');
       th.textContent = h;
@@ -597,8 +666,6 @@
       const tr = document.createElement('tr');
       const tdTime = document.createElement('td');
       tdTime.className = 'nowrap';
-      // Convert server timestamp to local device time for display.
-      // Prefer recorded_at (ISO) -> recorded_at_raw -> recorded_at_str.
       const sourceVal = row.recorded_at || row.recorded_at_raw || row.recorded_at_str || '';
       tdTime.textContent = toLocalDisplay(sourceVal);
       tr.appendChild(tdTime);
@@ -619,18 +686,14 @@
     table.appendChild(tbody);
     resultsEl.appendChild(table);
 
-    // Show paging/utility controls now that we have results
     showPagingControls();
   }
 
-  // Start a background total scan for the given params (if not already running for same params)
   function startTotalScanForParamsIfNeeded(params) {
     if (!params || !params.hash) return;
-    if (totalScanInProgressForHash === params.hash) return; // already scanning for this query
+    if (totalScanInProgressForHash === params.hash) return;
     totalScanInProgressForHash = params.hash;
 
-    // Set an immediate interim total from cached pages so UI doesn't show 0.
-    // This ensures the "Total Count" updates immediately (even while the full scan runs).
     try {
       let interim = 0;
       const cachedPages = Array.from(pageCache.keys()).sort((a,b) => a - b);
@@ -638,36 +701,28 @@
         const arr = pageCache.get(p) || [];
         interim += arr.length;
       }
-      // if we have no cached pages, interim remains 0 (that's fine)
       window.rowtotal = Number(interim) || 0;
       pokeResultsForRowTotal();
     } catch (e) {
       try { window.rowtotal = 0; } catch (e2) { /* ignore */ }
     }
 
-    // run asynchronously (no await here — fire and forget)
     (async () => {
       try {
         const total = await computeTotalRowsForQuery(params);
-        // expose result on window so client.js can use it
         try { window.rowtotal = Number(total) || 0; } catch (e) { /* ignore */ }
-        // trigger a tiny DOM add/remove to ensure client.js mutation observer notices the update
         pokeResultsForRowTotal();
       } catch (e) {
         console.error('computeTotalRowsForQuery error', e);
         try { window.rowtotal = 0; } catch (e2) { /* ignore */ }
         pokeResultsForRowTotal();
       } finally {
-        // mark done
         if (totalScanInProgressForHash === params.hash) totalScanInProgressForHash = null;
       }
     })();
   }
 
-  // Compute total authoritative row count for current query by scanning pages until a short page is found.
-  // This function intentionally does NOT modify UI state except setting window.rowtotal.
   async function computeTotalRowsForQuery(params) {
-    // Sum lengths of any already cached pages
     let sum = 0;
     const cachedPages = Array.from(pageCache.keys()).sort((a,b) => a - b);
     for (const p of cachedPages) {
@@ -675,72 +730,48 @@
       sum += arr.length;
     }
 
-    // If no cached pages exist, attempt to fetch page 0 to seed
     if (cachedPages.length === 0) {
       const first = await fetchPageRows(0, params.fromISO, params.toISO);
-      if (first === null) return 0; // error -> treat as 0
-      // store and include
+      if (first === null) return 0;
       pageCache.set(0, first);
       lastFetchedCountForPage.set(0, first.length);
       sum += first.length;
-      // if this page is short, it's the only page
       if (first.length < pageSize) return sum;
     }
 
-    // Start scanning from highest cached page + 1
     let start = (cachedPages.length === 0) ? 1 : (cachedPages[cachedPages.length - 1] + 1);
-    // If cachedPages included some pages but we just fetched page 0 above, recompute start
     const allCached = Array.from(pageCache.keys()).sort((a,b) => a - b);
-    if (allCached.length > 0) {
-      start = allCached[allCached.length - 1] + 1;
-    }
+    if (allCached.length > 0) start = allCached[allCached.length - 1] + 1;
 
-    // Cap number of pages to probe to avoid runaway requests
-    const MAX_PAGES_TO_SCAN = 10000; // very high cap; adjust if needed
+    const MAX_PAGES_TO_SCAN = 10000;
     for (let p = start, scans = 0; scans < MAX_PAGES_TO_SCAN; p++, scans++) {
       const rows = await fetchPageRows(p, params.fromISO, params.toISO);
-      if (rows === null) {
-        // on error, stop and return current sum (partial)
-        break;
-      }
+      if (rows === null) break;
       pageCache.set(p, rows);
       lastFetchedCountForPage.set(p, rows.length);
       sum += rows.length;
-      // If this page is short, we've reached the last page -> done
-      if (rows.length < pageSize) {
-        return sum;
-      }
-      // otherwise continue scanning
+      if (rows.length < pageSize) return sum;
     }
-
-    // If we reach here we scanned the cap without finding a short page — return the partial sum.
     return sum;
   }
 
-  // When rowtotal is updated, client.js listens to mutations in #results. To ensure it notices
-  // the new window.rowtotal value even if results DOM didn't change, perform a tiny add/remove
-  // child mutation on resultsEl (invisible marker). This triggers the client's MutationObserver.
   function pokeResultsForRowTotal() {
     try {
       if (!resultsEl) return;
       const id = '__rowtotal_marker__';
-      // ensure any previous marker removed
       const prev = document.getElementById(id);
       if (prev && prev.parentNode) prev.parentNode.removeChild(prev);
 
       const marker = document.createElement('div');
       marker.id = id;
       marker.style.display = 'none';
-      // append then remove next tick to generate childList mutations
       resultsEl.appendChild(marker);
       setTimeout(() => {
         try {
           if (marker.parentNode) marker.parentNode.removeChild(marker);
         } catch (e) { /* ignore */ }
       }, 0);
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) { /* ignore */ }
   }
 
   // Expose for debugging in console if needed

@@ -163,6 +163,32 @@
     table.table { width:100%; border-collapse:collapse; font-family:monospace; }
     table.table th, table.table td { padding:8px; border-bottom:1px solid rgba(255,255,255,0.02); text-align:left; font-size:13px; }
 
+    /* Chart container styling */
+    .chart-container {
+      margin-top:12px;
+      background: rgba(255,255,255,0.01);
+      padding:8px;
+      border-radius:8px;
+      border:1px solid rgba(255,255,255,0.03);
+      min-height: 240px;
+      max-height: 520px;
+      overflow: hidden;
+      position: relative;
+    }
+    .chart-canvas {
+      width:100%;
+      height:360px;
+      display:block;
+    }
+    .chart-header {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      margin-bottom:8px;
+    }
+    .chart-caption { color:var(--muted); font-size:13px; font-weight:600; }
+
     /* Footer at bottom */
     footer.app-footer {
       padding:8px 16px;
@@ -233,6 +259,7 @@
       .panel { padding:10px; }
       .controls { gap:6px; }
       .btn { padding:7px 8px; font-size:13px; }
+      .chart-canvas { height:240px; }
     }
 
     /* Very small screens / phones */
@@ -248,6 +275,7 @@
       .status-label { font-size:12px; }
       .tiles { gap:12px; }
       .tile .value { font-size:20px; }
+      .chart-canvas { height:200px; }
     }
 
     /* If the logo image is very wide and may still cause overflow, allow it to shrink */
@@ -305,6 +333,7 @@
           <label class="inline">To:</label>
           <input id="to" type="datetime-local" />
           <button id="fetch" class="btn">Query</button>
+          <button id="graph" class="btn" title="Show PPM vs Time">Graph</button>
           <button id="clear-results" class="btn secondary">Clear</button>
           <button id="export-csv" class="btn" title="Export current results">CSV</button>
         </div>
@@ -316,6 +345,21 @@
           <button class="btn preset" data-range="24h">24h</button>
           <button class="btn preset" data-range="7d">7d</button>
           <button class="btn preset" data-range="30d">30d</button>
+        </div>
+
+        <!-- Chart area (initially empty / hidden until data rendered) -->
+        <div id="chart-area" class="chart-container" aria-hidden="true" style="display:none;">
+          <div class="chart-header">
+            <div class="chart-caption">PPM vs Time</div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="color:var(--muted);font-size:13px" id="chart-meta">—</div>
+              <!-- NEW: Graph action buttons (CSV, PDF, Clear) -->
+              <button id="graph-csv" class="btn" title="Export graph data to CSV">CSV</button>
+              <button id="graph-pdf" class="btn" title="Export chart as PDF">PDF</button>
+              <button id="graph-clear" class="btn secondary" title="Clear graph">Clear</button>
+            </div>
+          </div>
+          <canvas id="ppm-chart" class="chart-canvas" role="img" aria-label="PPM vs Time chart"></canvas>
         </div>
 
         <div class="results" id="results">
@@ -330,6 +374,10 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="/client.js"></script>
+  <!-- Chart.js used only for the graph option -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <!-- jsPDF (UMD) for PDF export of the chart image -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="/query-client.js"></script>
 </body>
 </html>

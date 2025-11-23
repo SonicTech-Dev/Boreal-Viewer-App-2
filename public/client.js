@@ -242,7 +242,7 @@
   setInterval(updateLocalTime, 1000);
 
   // --- Button selection visuals (Query + preset buttons) ---
-  const selectionGroupSelector = '#fetch, .btn.preset';
+  const selectionGroupSelector = '#fetch, #graph, .btn.preset';
   function clearSelectionStyles() {
     const all = document.querySelectorAll(selectionGroupSelector);
     all.forEach(el => {

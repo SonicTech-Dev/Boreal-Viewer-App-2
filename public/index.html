@@ -334,6 +334,11 @@
           <input id="to" type="datetime-local" />
           <button id="fetch" class="btn">Query</button>
           <button id="graph" class="btn" title="Show PPM vs Time">Graph</button>
+
+          <!-- Graph Title input for PDF filename and PDF content -->
+          <label class="inline" for="graph-title">Graph Title:</label>
+          <input id="graph-title" type="text" placeholder="Optional title for PDF" style="padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit; min-width:220px;" />
+
           <button id="clear-results" class="btn secondary">Clear</button>
           <button id="export-csv" class="btn" title="Export current results">CSV</button>
         </div>
@@ -351,13 +356,7 @@
         <div id="chart-area" class="chart-container" aria-hidden="true" style="display:none;">
           <div class="chart-header">
             <div class="chart-caption">PPM vs Time</div>
-            <div style="display:flex;align-items:center;gap:8px">
-              <div style="color:var(--muted);font-size:13px" id="chart-meta">—</div>
-              <!-- NEW: Graph action buttons (CSV, PDF, Clear) -->
-              <button id="graph-csv" class="btn" title="Export graph data to CSV">CSV</button>
-              <button id="graph-pdf" class="btn" title="Export chart as PDF">PDF</button>
-              <button id="graph-clear" class="btn secondary" title="Clear graph">Clear</button>
-            </div>
+            <div style="color:var(--muted);font-size:13px" id="chart-meta">—</div>
           </div>
           <canvas id="ppm-chart" class="chart-canvas" role="img" aria-label="PPM vs Time chart"></canvas>
         </div>
@@ -376,8 +375,14 @@
   <script src="/client.js"></script>
   <!-- Chart.js used only for the graph option -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-  <!-- jsPDF (UMD) for PDF export of the chart image -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <!-- chartjs-plugin-zoom for interactive mouse/gesture zoom & pan -->
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0/dist/chartjs-plugin-zoom.min.js"></script>
+
+  <!-- jsPDF (UMD build) for true PDF creation -->
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+
+  <!-- query-client contains graph code and now uses jsPDF + plugin for interactive zoom/pan -->
   <script src="/query-client.js"></script>
 </body>
 </html>

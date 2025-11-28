@@ -225,7 +225,15 @@
         remoteStations = json.map(r => {
           const serial = r.serial_number || r.serial || r.serialNumber || '';
           const ip = r.ip || r.ip_address || '';
-          const display = (serial || '(unknown)') + (ip ? (' — ' + ip) : '');
+          // SIMPLE, DIRECT OVERRIDE: map known IPs to friendly Station names (no other behavior changed)
+          let display;
+          if (ip === '10.0.0.42') {
+            display = 'Station 1';
+          } else if (ip === '10.0.0.43') {
+            display = 'Station 2';
+          } else {
+            display = (serial || '(unknown)') + (ip ? (' — ' + ip) : '');
+          }
           return { serial_number: serial, ip, display, canonical: canonicalKey(serial) };
         });
       } else if (json && typeof json === 'object') {

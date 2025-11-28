@@ -404,7 +404,19 @@ function startDevicePingLoop(intervalMs = 30 * 1000) {
 // Expose remote stations (for frontend selection)
 app.get('/api/remote_stations', (req, res) => {
   try {
-    const rows = Object.entries(deviceIPMapping).map(([serial, ip]) => ({ serial_number: serial, ip }));
+    // Return an explicit display property so frontend can show friendly names.
+    // For the two example IPs, map them to "Station 1" / "Station 2" as requested.
+    const rows = Object.entries(deviceIPMapping).map(([serial, ip]) => {
+      let display;
+      if (ip === '10.0.0.42') {
+        display = 'Station 1';
+      } else if (ip === '10.0.0.43') {
+        display = 'Station 2';
+      } else {
+        display = (serial || '(unknown)') + (ip ? (' — ' + ip) : '');
+      }
+      return { serial_number: serial, ip, display };
+    });
     return res.json(rows);
   } catch (err) {
     console.error('GET /api/remote_stations error:', err);

@@ -1,27 +1,17 @@
 // client.js — live UI: receives mqtt_message, updates real-time tiles with popup details and feed.
-// Full feature set restored: hover popups, real-time feed, status dot/label.
+// Fix: prefer exact canonical key matches before tolerant/includes matching so merged PPM wins.
+// Label change: renamed GasFinder-PPM -> PPM-M-LO
 
 (function () {
-  // VISUAL-ONLY CHANGE (no functional changes):
-  // Inject a tiny stylesheet that increases the visible size of the status label text
-  // and enlarges the status dot. This only affects visuals and does not touch behavior.
+  // VISUAL-ONLY STYLE: enlarge status, style dropdown
   try {
     const _s = document.createElement('style');
     _s.id = 'status-visuals';
     _s.textContent = `
-      /* Larger status label and dot (desktop) */
-      #status-label {
-        font-size: 16px !important;
-        font-weight: 800 !important;
-        letter-spacing: 0.2px;
-      }
-      #status-dot {
-        width: 26px !important;
-        height: 26px !important;
-        border-radius: 50% !important;
-      }
-
-      /* Slightly scaled down on small screens to avoid layout issues */
+      #status-label { font-size: 16px !important; font-weight: 800 !important; letter-spacing: 0.2px; }
+      #status-dot { width: 26px !important; height: 26px !important; border-radius: 50% !important; }
+      #status-wrapper { display: inline-flex; align-items: center; gap: 10px; }
+      #station-select { padding: 6px 8px; font-size: 13px; border-radius: 6px; border: 1px solid rgba(0,0,0,0.08); background: var(--bg); color: inherit; }
       @media (max-width: 800px) {
         #status-label { font-size: 15px !important; }
         #status-dot { width: 24px !important; height: 24px !important; }
@@ -29,37 +19,45 @@
       @media (max-width: 420px) {
         #status-label { font-size: 13px !important; }
         #status-dot { width: 18px !important; height: 18px !important; }
+        #station-select { font-size: 12px; padding: 4px 6px; }
       }
     `;
     document.head && document.head.appendChild(_s);
-  } catch (e) {
-    // ignore style injection failures — purely visual
-  }
+  } catch (e) {}
 
-  // public/client.js
-  // Shows simple Online/Offline based solely on server ping results (device_status)
   const socket = io();
   const statusDot = document.getElementById('status-dot');
   const statusLabel = document.getElementById('status-label');
   const localTimeEl = document.getElementById('local-time');
   const tilesContainer = document.getElementById('tiles');
   const feedEl = document.getElementById('feed');
-  const resultsEl = document.getElementById('results'); // query results container
+  const resultsEl = document.getElementById('results');
 
-  // Tile key mappings and variants
+  // Tile key mappings and variants (broad set)
   const KEYS = [
-    { keyVariants: ['LoS-Temp(c)'], label: 'Temp (°C)', apiField: 'los_temp' },
-    { keyVariants: ['LoS-Rx Light'], label: 'Rx Light', apiField: 'los_rx_light' },
-    { keyVariants: ['LoS- R2', 'LoS-R2', 'LoS - R2'], label: 'R2', apiField: 'los_r2' },
-    { keyVariants: ['LoS-HeartBeat', 'LoS- HeartBeat'], label: 'HeartBeat', apiField: 'los_heartbeat' },
-    { keyVariants: ['LoS - PPM', 'LoS- PPM', 'LoS-PPM'], label: 'GasFinder-PPM', apiField: 'los_ppm' }
+    { keyVariants: ['LoS-Temp(c)', 'LoS-Temp', 'LoS-Temp(C)', 'lostemp', 'los_temp'], label: 'Temp (°C)', apiField: 'los_temp' },
+    { keyVariants: ['LoS-Rx Light', 'LoS-RxLight', 'LoS Rx Light', 'losrxlight'], label: 'Rx Light', apiField: 'los_rx_light' },
+    { keyVariants: ['LoS- R2', 'LoS-R2', 'LoS - R2', 'losr2'], label: 'R2', apiField: 'los_r2' },
+    { keyVariants: ['LoS-HeartBeat', 'LoS- HeartBeat', 'losheartbeat'], label: 'HeartBeat', apiField: 'los_heartbeat' },
+    // <- Label updated here:
+    { keyVariants: ['LoS - PPM', 'LoS- PPM', 'LoS-PPM', 'los_ppm', 'ppm', 'losppm'], label: 'PPM-M-LO', apiField: 'los_ppm' }
   ];
 
-  // Store latest values
+  // Latest values for tiles (values correspond to currently selected station)
   const latest = {};
   KEYS.forEach(k => latest[k.label] = { value: null, updated_at: null, raw: null });
 
-  // Create tiles with popup for each metric
+  // Remote stations
+  let remoteStations = []; // array of { serial_number, ip, display, canonical }
+  let selectedSerial = null; // canonical serial of currently selected station (always a station, no "All")
+  const deviceStatusMap = new Map(); // canonical serial -> last status object
+
+  // Utility: canonicalize keys/serials for robust matching (lowercase, remove spaces/hyphens/underscores/parentheses)
+  function canonicalKey(k) {
+    return String(k || '').toLowerCase().replace(/[\s\-\(\)_]/g, '');
+  }
+
+  // Create tiles
   function createTiles() {
     if (!tilesContainer) return;
     tilesContainer.innerHTML = '';
@@ -98,7 +96,7 @@
     });
   }
 
-  // Update tiles (applies R2 / 100 transformation only for display)
+  // Update tiles with current latest map
   function updateTiles() {
     KEYS.forEach(k => {
       const info = latest[k.label];
@@ -115,19 +113,14 @@
         if (popupVal) popupVal.textContent = '-';
         if (popupTime) popupTime.textContent = '—';
       } else {
-        // Apply R2 display transformation: divide by 100 before showing
         let displayValue = info.value;
         if (k.label === 'R2') {
           const n = Number(info.value);
           if (!Number.isNaN(n)) displayValue = n / 100;
         }
-
         const display = (typeof displayValue === 'number' && !Number.isInteger(displayValue)) ? displayValue.toFixed(2) : String(displayValue);
         valueEl.textContent = display;
-
-        // Completely remove the timestamp from the tile meta (no "updated:" text).
         metaEl.textContent = '';
-
         if (popupVal) popupVal.textContent = display;
         if (popupTime) popupTime.textContent = info.updated_at ? ('at ' + new Date(info.updated_at).toLocaleString()) : '—';
       }
@@ -145,7 +138,6 @@
     while (feedEl.childElementCount > 200) feedEl.removeChild(feedEl.lastChild);
   }
 
-  // Utility: clear all readings (set them to null so updateTiles shows '-')
   function clearAllReadings() {
     KEYS.forEach(k => {
       latest[k.label] = { value: null, updated_at: null, raw: null };
@@ -153,8 +145,7 @@
     updateTiles();
   }
 
-  // --- SIMPLE ONLINE/OFFLINE STATUS (device ping only) ---
-  // deviceOnline: null = unknown (shows "Checking…"), true = online, false = offline
+  // --- Status handling (tied to selectedSerial only) ---
   let deviceOnline = null;
   let deviceIp = null;
   let deviceRtt = null;
@@ -162,6 +153,12 @@
 
   function setStatusVisual(online) {
     if (!statusDot || !statusLabel) return;
+    if (online === null) {
+      statusDot.style.background = 'var(--muted)';
+      statusDot.style.boxShadow = 'none';
+      statusLabel.textContent = 'Checking…';
+      return;
+    }
     if (online) {
       statusDot.style.background = 'var(--success)';
       statusDot.style.boxShadow = '0 0 10px rgba(16,185,129,0.18)';
@@ -173,59 +170,175 @@
     }
   }
 
-  function applyDeviceStatus() {
-    if (deviceOnline === null) {
-      // keep "Checking…" as set in index.html
+  // Apply currently selected serial's status
+  function applySelectedDeviceStatus() {
+    if (!selectedSerial) {
+      deviceOnline = null;
+      deviceIp = null;
+      deviceRtt = null;
+      deviceLastSeen = null;
+      setStatusVisual(null);
       return;
     }
-    // If device offline, clear readings immediately
-    if (deviceOnline === false) {
-      clearAllReadings();
+
+    const st = deviceStatusMap.get(selectedSerial);
+    if (!st) {
+      deviceOnline = null;
+      deviceIp = null;
+      deviceRtt = null;
+      deviceLastSeen = null;
+      setStatusVisual(null);
+      return;
     }
+    deviceOnline = !!st.online;
+    deviceIp = st.ip || null;
+    deviceRtt = (st.rtt !== undefined && st.rtt !== null) ? Number(st.rtt) : null;
+    deviceLastSeen = st.when || st.ts || null;
     setStatusVisual(deviceOnline);
   }
 
-  // Listen for backend ping events
+  // Socket device_status events: update map and if it matches selection update UI
   socket.on('device_status', (s) => {
     if (!s || typeof s !== 'object') return;
-    deviceIp = s.ip || deviceIp;
-    deviceOnline = !!s.online;
-    deviceRtt = (s.rtt !== undefined && s.rtt !== null) ? Number(s.rtt) : null;
-    deviceLastSeen = s.ts || new Date().toISOString();
+    const rawSerial = s.serial_number || s.serial || s.serialNumber || null;
+    if (rawSerial) {
+      const c = canonicalKey(rawSerial);
+      deviceStatusMap.set(c, Object.assign({}, s, { canonical_serial: c }));
+    } else if (s.ip) {
+      deviceStatusMap.set('ip:' + s.ip, Object.assign({}, s));
+    }
 
-    applyDeviceStatus();
+    if (rawSerial && selectedSerial && canonicalKey(rawSerial) === selectedSerial) {
+      applySelectedDeviceStatus();
+    }
 
-    addToFeed(`[${new Date(deviceLastSeen).toLocaleTimeString()}] PING ${deviceIp} — ${deviceOnline ? ('online rtt=' + (deviceRtt !== null ? deviceRtt + 'ms' : 'n/a')) : 'offline'}`);
+    addToFeed(`[${new Date((s.when || s.ts) || Date.now()).toLocaleTimeString()}] PING ${s.ip || ''} — ${s.online ? 'online' : 'offline'} ${rawSerial ? ('[' + rawSerial + ']') : ''}`);
   });
 
-  // Bootstrap on load from /_device_status
-  (async function initStatus() {
+  // --- Init: fetch remote stations AND device status snapshot (ordering matters) ---
+  async function fetchRemoteStationsAndPopulate() {
+    try {
+      const res = await fetch('/api/remote_stations', { cache: 'no-cache' });
+      if (!res.ok) throw new Error('failed');
+      const json = await res.json();
+      if (Array.isArray(json)) {
+        remoteStations = json.map(r => {
+          const serial = r.serial_number || r.serial || r.serialNumber || '';
+          const ip = r.ip || r.ip_address || '';
+          const display = (serial || '(unknown)') + (ip ? (' — ' + ip) : '');
+          return { serial_number: serial, ip, display, canonical: canonicalKey(serial) };
+        });
+      } else if (json && typeof json === 'object') {
+        remoteStations = Object.keys(json).map(k => ({ serial_number: k, ip: json[k], display: (k + ' — ' + json[k]), canonical: canonicalKey(k) }));
+      } else {
+        remoteStations = [];
+      }
+    } catch (e) {
+      console.warn('Could not load remote stations:', e && e.message ? e.message : e);
+      remoteStations = [];
+    }
+
+    const select = document.getElementById('station-select');
+    if (!select) return;
+
+    Array.from(select.querySelectorAll('option')).forEach(opt => opt.remove());
+
+    remoteStations.forEach(rs => {
+      const opt = document.createElement('option');
+      opt.value = rs.canonical; // store canonical serial as value
+      opt.dataset.display = rs.display;
+      opt.textContent = rs.display;
+      select.appendChild(opt);
+    });
+
+    if (remoteStations.length > 0) {
+      selectedSerial = remoteStations[0].canonical;
+      select.value = selectedSerial;
+      applySelectedDeviceStatus();
+      clearAllReadings();
+      addToFeed(`[${new Date().toLocaleTimeString()}] Auto-selected station: ${remoteStations[0].display}`);
+    } else {
+      selectedSerial = null;
+      const disabledOpt = document.createElement('option');
+      disabledOpt.value = '';
+      disabledOpt.textContent = 'No stations configured';
+      select.appendChild(disabledOpt);
+      select.disabled = true;
+      addToFeed(`[${new Date().toLocaleTimeString()}] No remote stations returned from server`);
+    }
+  }
+
+  async function initStatusSnapshot() {
     try {
       const res = await fetch('/_device_status', { cache: 'no-cache' });
-      if (res.ok) {
-        const j = await res.json();
-        if (j && j.status) {
-          const s = j.status;
-          deviceIp = s.ip || deviceIp;
-          deviceOnline = (s.online === undefined) ? null : !!s.online;
-          deviceRtt = (s.rtt !== undefined && s.rtt !== null) ? Number(s.rtt) : null;
-          deviceLastSeen = s.ts || new Date().toISOString();
+      if (!res.ok) throw new Error('failed');
+      const j = await res.json();
+      const list = j && j.status ? j.status : null;
+      if (Array.isArray(list)) {
+        for (const st of list) {
+          const serial = st.serial_number || st.serial || st.serialNumber || null;
+          if (serial) {
+            const c = canonicalKey(serial);
+            deviceStatusMap.set(c, Object.assign({}, st, { canonical_serial: c }));
+          }
+        }
+      } else if (list && typeof list === 'object') {
+        const serial = list.serial_number || list.serial || list.serialNumber || null;
+        if (serial) {
+          const c = canonicalKey(serial);
+          deviceStatusMap.set(c, Object.assign({}, list, { canonical_serial: c }));
         }
       }
     } catch (e) {
-      // leave deviceOnline = null (still "Checking…")
+      // ignore; map may be empty
     } finally {
-      if (deviceOnline === true || deviceOnline === false) {
-        applyDeviceStatus();
-        if (deviceLastSeen) {
-          addToFeed(`[${new Date(deviceLastSeen).toLocaleTimeString()}] PING ${deviceIp} — ${deviceOnline ? ('online rtt=' + (deviceRtt !== null ? deviceRtt + 'ms' : 'n/a')) : 'offline'}`);
-        }
+      applySelectedDeviceStatus();
+      if (deviceLastSeen) {
+        addToFeed(`[${new Date(deviceLastSeen).toLocaleTimeString()}] Initial ping status applied`);
       }
     }
-  })();
-  // --- end status logic ---
+  }
 
-  // Local time updater (DD/MM/YYYY HH:MM:SS)
+  // Create dropdown and insert next to status
+  function createStationDropdown() {
+    const wrapper = document.createElement('div');
+    wrapper.id = 'status-wrapper';
+    if (statusLabel && statusLabel.parentNode) {
+      const parent = statusLabel.parentNode;
+      parent.insertBefore(wrapper, statusLabel);
+      if (statusDot) wrapper.appendChild(statusDot);
+      wrapper.appendChild(statusLabel);
+    } else {
+      document.body.insertBefore(wrapper, document.body.firstChild);
+      if (statusDot) wrapper.appendChild(statusDot);
+      if (statusLabel) wrapper.appendChild(statusLabel);
+    }
+
+    const select = document.createElement('select');
+    select.id = 'station-select';
+    select.title = 'Select remote station';
+
+    select.addEventListener('change', (ev) => {
+      const val = ev.target.value || '';
+      if (!val) {
+        addToFeed(`[${new Date().toLocaleTimeString()}] Invalid station selected`);
+        return;
+      }
+      selectedSerial = val;
+      applySelectedDeviceStatus();
+      clearAllReadings();
+      const display = ev.target.selectedOptions && ev.target.selectedOptions[0] ? ev.target.selectedOptions[0].dataset.display || ev.target.selectedOptions[0].textContent : selectedSerial;
+      addToFeed(`[${new Date().toLocaleTimeString()}] Selected station: ${display}`);
+    });
+
+    wrapper.appendChild(select);
+  }
+
+  // Insert dropdown first, then load stations and status snapshot
+  createStationDropdown();
+  fetchRemoteStationsAndPopulate().then(initStatusSnapshot).catch(() => { initStatusSnapshot(); });
+
+  // --- Local time ---
   function pad(n) { return String(n).padStart(2, '0'); }
   function updateLocalTime() {
     if (!localTimeEl) return;
@@ -241,41 +354,26 @@
   updateLocalTime();
   setInterval(updateLocalTime, 1000);
 
-  // --- Button selection visuals (Query + preset buttons) ---
+  // --- Results count & selection visuals (unchanged) ---
   const selectionGroupSelector = '#fetch, #graph, .btn.preset';
   function clearSelectionStyles() {
     const all = document.querySelectorAll(selectionGroupSelector);
-    all.forEach(el => {
-      el.classList.remove('selected');
-      el.style.background = '';
-      el.style.color = '';
-      el.style.boxShadow = '';
-    });
+    all.forEach(el => { el.classList.remove('selected'); el.style.background = ''; el.style.color = ''; el.style.boxShadow = ''; });
   }
   function applySelectionStyle(el) {
     clearSelectionStyles();
     if (!el) return;
     el.classList.add('selected');
-    // changed highlight color to red as requested
     el.style.background = '#ef4444';
     el.style.color = '#fff';
     el.style.boxShadow = '0 6px 14px rgba(239,68,68,0.12)';
   }
   function wireSelectionHandlers() {
     const elems = document.querySelectorAll(selectionGroupSelector);
-    elems.forEach(el => {
-      el.addEventListener('click', () => {
-        if (!el.classList.contains('selected')) applySelectionStyle(el);
-      });
-    });
+    elems.forEach(el => el.addEventListener('click', () => { if (!el.classList.contains('selected')) applySelectionStyle(el); }));
   }
   wireSelectionHandlers();
 
-  // --- Results count logic ---
-  // Adds/updates a small count display UNDER the results table that is always visible
-  // (we place the element as a sibling after the scrollable #results container so it doesn't get hidden by scrolling).
-
-  // Create or update the count element (placed AFTER the resultsEl so it remains visible)
   function createOrGetCountEl() {
     let countEl = document.getElementById('results-count');
     if (!countEl) {
@@ -288,29 +386,21 @@
     }
     return countEl;
   }
-
   function placeCountElementVisible() {
     if (!resultsEl) return;
     const countEl = createOrGetCountEl();
     const parent = resultsEl.parentNode || document.body;
-    // Insert as a direct sibling immediately after resultsEl so it's always visible (outside the scrollable area)
     if (countEl.parentNode !== parent || countEl.nextSibling !== resultsEl.nextSibling) {
-      // remove from previous parent if necessary
       if (countEl.parentNode) countEl.parentNode.removeChild(countEl);
       if (resultsEl.nextSibling) parent.insertBefore(countEl, resultsEl.nextSibling);
       else parent.appendChild(countEl);
     }
   }
-
   function setResultsCount(count) {
     const countEl = createOrGetCountEl();
-    // label changed to "Total Count" per your request
     countEl.textContent = `Total Count: ${count.toLocaleString()}`;
-    // Ensure it's visible (placed after results container)
     placeCountElementVisible();
   }
-
-  // Remove "Fetch all" button if present (we'll keep the count element visible instead)
   function removeFetchAllButtonIfPresent() {
     if (!resultsEl) return false;
     const candidates = Array.from(resultsEl.querySelectorAll('button, input[type="button"], a'));
@@ -319,88 +409,79 @@
       const id = (el.id || '').toLowerCase();
       const cls = (el.className || '').toLowerCase();
       if (txt.includes('fetch all') || txt === 'fetch all' || (id.includes('fetch') && id.includes('all')) || (cls.includes('fetch') && cls.includes('all'))) {
-        try { el.parentNode.removeChild(el); } catch (e) { /* ignore */ }
+        try { el.parentNode.removeChild(el); } catch (e) {}
         return true;
       }
     }
     return false;
   }
-
-  // Compute number of data rows in the results table
-  function computeResultsRowCount() {
-    if (!resultsEl) return 0;
-    // Find table.table inside results
-    const table = resultsEl.querySelector('table.table');
-    if (!table) return 0;
-    // Prefer tbody rows if present
-    const tbody = table.querySelector('tbody');
-    if (tbody) {
-      return tbody.querySelectorAll('tr').length;
-    }
-    // Otherwise count tr excluding thead header row(s)
-    const allRows = table.querySelectorAll('tr');
-    // subtract header rows (if thead exists use its rows count)
-    const thead = table.querySelector('thead');
-    if (thead) {
-      const headerRows = thead.querySelectorAll('tr').length;
-      return Math.max(0, allRows.length - headerRows);
-    }
-    // fallback: assume first row is header
-    return Math.max(0, allRows.length - 1);
-  }
-
-  // Run a one-time count update (useful after query completes)
   function updateResultsCountNow() {
-    // Read the authoritative total that your query script sets. Many inline scripts use:
-    //   let rowtotal = 0;  // top-level let in the page script
-    // That identifier is accessible via `typeof rowtotal !== "undefined"` in other page scripts
-    // (unless the query script is a module/closure). Use that first so we pick up the true total.
     let totalAll = 0;
-    if (typeof rowtotal !== 'undefined' && typeof rowtotal === 'number') {
-      totalAll = rowtotal;
-    } else if (typeof window.rowtotal !== 'undefined' && typeof window.rowtotal === 'number') {
-      totalAll = window.rowtotal;
-    } else {
-      // If the page did not expose rowtotal as a numeric value, show 0 (do not count visible rows).
-      totalAll = 0;
-    }
-
-    // remove the Fetch all button if present (we replace it with the visible count)
+    if (typeof rowtotal !== 'undefined' && typeof rowtotal === 'number') totalAll = rowtotal;
+    else if (typeof window.rowtotal !== 'undefined' && typeof window.rowtotal === 'number') totalAll = window.rowtotal;
+    else totalAll = 0;
     removeFetchAllButtonIfPresent();
     setResultsCount(totalAll);
   }
-
-  // Observe mutations inside #results and update count when table changes
   if (resultsEl) {
     const mo = new MutationObserver((mutationsList) => {
-      // If any childList mutation occurred, recompute the count.
-      // Debounce briefly to allow the table to be fully inserted/updated.
       let relevant = false;
       for (const m of mutationsList) {
-        if (m.type === 'childList' || m.type === 'subtree' || m.type === 'attributes') {
-          relevant = true;
-          break;
-        }
+        if (m.type === 'childList' || m.type === 'subtree' || m.type === 'attributes') { relevant = true; break; }
       }
       if (relevant) {
-        // small debounce
         clearTimeout(window.__results_count_timer__);
         window.__results_count_timer__ = setTimeout(updateResultsCountNow, 120);
       }
     });
     mo.observe(resultsEl, { childList: true, subtree: true, attributes: false });
-    // Initial run in case results already present
     setTimeout(updateResultsCountNow, 200);
   }
 
-  // Handle incoming mqtt messages: update tiles and feed
+  // --- Helpers for canonical matching / ppm merging ---
+  function canonicalMatch(keyA, keyB) {
+    const a = canonicalKey(keyA);
+    const b = canonicalKey(keyB);
+    if (a === b) return true;
+    if (a.includes(b) || b.includes(a)) return true;
+    return false;
+  }
+
+  // Try to extract serial from msg in several common places
+  function extractSerialFromMsg(msg) {
+    if (!msg || typeof msg !== 'object') return null;
+    const candidates = [
+      msg.serial_number, msg.serial, msg.serialNumber,
+      msg.payload && (msg.payload.serial_number || msg.payload.serial || msg.payload.serialNumber),
+      (msg.payload && msg.payload.params && (msg.payload.params.serial_number || msg.payload.params.serial || msg.payload.params.serialNumber)),
+      msg.los && (msg.los.serial_number || msg.los.serial)
+    ];
+    for (const c of candidates) {
+      if (c !== undefined && c !== null && String(c).trim() !== '') return String(c).trim();
+    }
+    return null;
+  }
+
+  // --- MQTT message handling ---
   socket.on('mqtt_message', (msg) => {
     const ts = msg.received_at || new Date().toISOString();
+    const rawSerial = extractSerialFromMsg(msg);
+    const msgCanonical = rawSerial ? canonicalKey(rawSerial) : null;
+
+    if (!selectedSerial) {
+      addToFeed(`[${new Date(ts).toLocaleTimeString()}] MQTT message ignored (no station selected) — ${msg.topic}`);
+      return;
+    }
+
+    if (!msgCanonical || msgCanonical !== selectedSerial) {
+      addToFeed(`[${new Date(ts).toLocaleTimeString()}] Ignored MQTT for ${rawSerial || '(no serial)'} — topic ${msg.topic}`);
+      return;
+    }
 
     let params = null;
     if (msg.payload && typeof msg.payload === 'object') {
       params = (msg.payload.params && typeof msg.payload.params === 'object') ? msg.payload.params : msg.payload;
-    } else {
+    } else if (typeof msg.raw === 'string') {
       try {
         const parsed = JSON.parse(msg.raw);
         params = (parsed && parsed.params && typeof parsed.params === 'object') ? parsed.params : parsed;
@@ -408,9 +489,41 @@
         params = null;
       }
     }
-
     if (!params || typeof params !== 'object') return;
 
+    // Build canonical map and detect ppm int+dec
+    const pmap = {};
+    Object.keys(params).forEach(k => { pmap[canonicalKey(k)] = { originalKey: k, value: params[k] }; });
+
+    let intVal, decVal;
+    for (const [ck, entry] of Object.entries(pmap)) {
+      const raw = entry.value;
+      const num = (raw === null || raw === undefined) ? NaN : Number(raw);
+      if (Number.isNaN(num)) continue;
+      if (ck.includes('pp') && (ck.includes('int') || ck.includes('mlo'))) { intVal = num; continue; }
+      if (ck.includes('pp') && (ck.includes('dec') || ck.includes('decimal'))) { decVal = num; continue; }
+      if ((ck.endsWith('int') || ck.endsWith('mloint')) && ck.includes('pp')) intVal = num;
+      if (ck.endsWith('dec') && ck.includes('pp')) decVal = num;
+    }
+
+    // MERGING: correctly combine integer and decimal parts
+    let mergedPpm = null;
+    if (typeof intVal !== 'undefined' && typeof decVal !== 'undefined') {
+      const iPart = Number(intVal);
+      if (Number.isFinite(iPart)) {
+        const decInt = Math.trunc(Math.abs(Number(decVal)));
+        if (Number.isFinite(decInt)) {
+          const decStr = String(decInt);
+          const divisor = (decStr.length === 1) ? 10 : Math.pow(10, decStr.length);
+          const sign = (iPart < 0) ? -1 : 1;
+          const absMerged = Math.abs(iPart) + (decInt / divisor);
+          const merged = sign < 0 ? -absMerged : absMerged;
+          mergedPpm = Number.isFinite(merged) ? merged : null;
+        }
+      }
+    }
+
+    // Collect los-like keys
     const los = {};
     Object.keys(params).forEach(kName => {
       if (typeof kName === 'string' && kName.trim().toLowerCase().startsWith('los')) {
@@ -418,27 +531,59 @@
       }
     });
 
+    // If mergedPpm present, inject a canonical PPM key so matching works
+    if (mergedPpm !== null) {
+      los['LoS-PPM'] = mergedPpm;
+    }
+
     if (Object.keys(los).length === 0) return;
 
-    // If device is offline, ignore incoming readings and keep them cleared
+    // If device offline for the selected station, ignore incoming readings
     if (deviceOnline === false) {
-      // still add feed entry that we ignored the reading (optional)
       addToFeed(`[${new Date(ts).toLocaleTimeString()}] MQTT reading ignored (device offline) — ${msg.topic}`);
       return;
     }
 
-    // Update latest values by matching variants
+    // Update latest using exact-match-first, then tolerant includes fallback
     KEYS.forEach(mapping => {
-      for (const variant of mapping.keyVariants) {
-        if (Object.prototype.hasOwnProperty.call(los, variant)) {
-          latest[mapping.label] = { value: los[variant], updated_at: ts, raw: los };
+      let found = false;
+
+      // Build canonical variants for this mapping once
+      const variantCans = mapping.keyVariants.map(v => canonicalKey(v));
+
+      // Exact canonical match phase
+      for (const actualKey of Object.keys(los)) {
+        const aCan = canonicalKey(actualKey);
+        if (variantCans.includes(aCan)) {
+          latest[mapping.label] = { value: los[actualKey], updated_at: ts, raw: los };
+          found = true;
           break;
         }
+      }
+
+      if (!found) {
+        // Fallback tolerant/includes match
+        for (const variant of mapping.keyVariants) {
+          for (const actualKey of Object.keys(los)) {
+            if (canonicalMatch(actualKey, variant)) {
+              latest[mapping.label] = { value: los[actualKey], updated_at: ts, raw: los };
+              found = true;
+              break;
+            }
+          }
+          if (found) break;
+        }
+      }
+
+      // final fallback: if mapping is PPM and mergedPpm exists and wasn't matched above, set it
+      if (!found && mapping.apiField === 'los_ppm' && mergedPpm !== null) {
+        latest[mapping.label] = { value: mergedPpm, updated_at: ts, raw: los };
       }
     });
 
     updateTiles();
-    addToFeed(`[${new Date(ts).toLocaleTimeString()}] ${msg.topic} — ${JSON.stringify(los)}`);
+
+    addToFeed(`[${new Date(ts).toLocaleTimeString()}] [${rawSerial}] ${msg.topic} — ${JSON.stringify(los)}`);
   });
 
   // Initial render

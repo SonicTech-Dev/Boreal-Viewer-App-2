@@ -1,6 +1,8 @@
 // client.js — live UI: receives mqtt_message, updates real-time tiles with popup details and feed.
 // Fix: prefer exact canonical key matches before tolerant/includes matching so merged PPM wins.
 // Label change: renamed GasFinder-PPM -> PPM-M-LO
+//
+// NOTE: Popup hover removed — tiles now do nothing on hover.
 
 (function () {
   // VISUAL-ONLY STYLE: enlarge status, style dropdown
@@ -39,7 +41,7 @@
     { keyVariants: ['LoS-Rx Light', 'LoS-RxLight', 'LoS Rx Light', 'losrxlight'], label: 'Rx Light', apiField: 'los_rx_light' },
     { keyVariants: ['LoS- R2', 'LoS-R2', 'LoS - R2', 'losr2'], label: 'R2', apiField: 'los_r2' },
     { keyVariants: ['LoS-HeartBeat', 'LoS- HeartBeat', 'losheartbeat'], label: 'HeartBeat', apiField: 'los_heartbeat' },
-    // <- Label updated here:
+    // Label updated to PPM-M-LO
     { keyVariants: ['LoS - PPM', 'LoS- PPM', 'LoS-PPM', 'los_ppm', 'ppm', 'losppm'], label: 'PPM-M-LO', apiField: 'los_ppm' }
   ];
 
@@ -57,7 +59,7 @@
     return String(k || '').toLowerCase().replace(/[\s\-\(\)_]/g, '');
   }
 
-  // Create tiles
+  // Create tiles (popup removed by design)
   function createTiles() {
     if (!tilesContainer) return;
     tilesContainer.innerHTML = '';
@@ -78,19 +80,11 @@
       meta.className = 'meta';
       meta.textContent = 'No data';
 
-      const popup = document.createElement('div');
-      popup.className = 'popup';
-      popup.id = 'popup-' + k.apiField;
-      popup.innerHTML = `
-        <div style="color:var(--muted);font-size:12px">Latest</div>
-        <div style="font-weight:700;font-size:18px" id="popup-val-${k.apiField}">-</div>
-        <div style="margin-top:6px;color:var(--muted);font-size:12px" id="popup-time-${k.apiField}">—</div>
-      `;
+      // NOTE: popup intentionally removed so hovering tiles does nothing
 
       tile.appendChild(label);
       tile.appendChild(value);
       tile.appendChild(meta);
-      tile.appendChild(popup);
 
       tilesContainer.appendChild(tile);
     });
@@ -104,14 +98,10 @@
       if (!tile) return;
       const valueEl = tile.querySelector('.value');
       const metaEl = tile.querySelector('.meta');
-      const popupVal = tile.querySelector('#popup-val-' + k.apiField);
-      const popupTime = tile.querySelector('#popup-time-' + k.apiField);
 
       if (info.value === null || info.value === undefined) {
         valueEl.textContent = '-';
         metaEl.textContent = 'No data';
-        if (popupVal) popupVal.textContent = '-';
-        if (popupTime) popupTime.textContent = '—';
       } else {
         let displayValue = info.value;
         if (k.label === 'R2') {
@@ -121,8 +111,6 @@
         const display = (typeof displayValue === 'number' && !Number.isInteger(displayValue)) ? displayValue.toFixed(2) : String(displayValue);
         valueEl.textContent = display;
         metaEl.textContent = '';
-        if (popupVal) popupVal.textContent = display;
-        if (popupTime) popupTime.textContent = info.updated_at ? ('at ' + new Date(info.updated_at).toLocaleString()) : '—';
       }
     });
   }

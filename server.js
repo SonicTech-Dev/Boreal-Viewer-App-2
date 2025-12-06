@@ -1,3 +1,4 @@
+contents=
 /**
  Updated server.js
 
@@ -157,6 +158,78 @@ function extractCanonicalLos(params) {
   }
 
   return result;
+}
+
+/**
+ * Map a database row (which may contain weird column names like "LoS-Temp(c)" or "LoS - PPM")
+ * into the normalized shape expected by the frontend / query-client:
+ *  - los_temp
+ *  - los_rx_light
+ *  - los_r2
+ *  - los_heartbeat
+ *  - los_ppm
+ *  - recorded_at, recorded_at_str
+ *
+ * This fixes the case where the DB column names include spaces/hyphens and are returned
+ * as properties that the frontend code does not look for. We build a canonical lookup
+ * from the DB row keys and pick the best candidate for each expected field.
+ */
+function mapDbRowToApi(row) {
+  if (!row || typeof row !== 'object') return row;
+  const cMap = {};
+  for (const k of Object.keys(row)) {
+    cMap[canonicalKey(k)] = row[k];
+  }
+
+  const pick = (variants) => {
+    for (const v of variants) {
+      const val = cMap[canonicalKey(v)];
+      if (val !== undefined) return val;
+    }
+    return undefined;
+  };
+
+  const out = Object.assign({}, row); // keep other fields like id, serial_number if present
+
+  // normalized fields
+  out.los_temp = pick(['LoS-Temp(c)', 'LoS-Temp', 'LoS-Temp(C)', 'lostemp', 'los_temp']);
+  out.los_rx_light = pick(['LoS-Rx Light', 'LoS-RxLight', 'LoS Rx Light', 'losrxlight', 'los_rx_light']);
+  out.los_r2 = pick(['LoS- R2', 'LoS-R2', 'LoS - R2', 'losr2', 'los_r2']);
+  out.los_heartbeat = pick(['LoS-HeartBeat', 'LoS- HeartBeat', 'losheartbeat', 'los_heartbeat']);
+  out.los_ppm = pick(['LoS - PPM', 'LoS- PPM', 'LoS-PPM', 'los_ppm', 'ppm', 'losppm']);
+
+  // Coerce numeric-looking fields to numbers where appropriate; if not present set null
+  ['los_temp', 'los_rx_light', 'los_r2', 'los_heartbeat', 'los_ppm'].forEach((f) => {
+    if (out[f] === undefined) {
+      out[f] = null;
+    } else if (out[f] === null) {
+      // leave null
+    } else {
+      const n = Number(out[f]);
+      if (!Number.isNaN(n)) out[f] = n;
+      // if NaN, keep the original (rare); frontend can handle empty/non-numeric
+    }
+  });
+
+  // Normalize recorded_at / recorded_at_str
+  out.recorded_at = row.recorded_at || row.recorded_at_raw || row.recorded_at_str || null;
+  if (out.recorded_at && out.recorded_at instanceof Date) {
+    out.recorded_at_str = out.recorded_at.toISOString();
+  } else if (typeof out.recorded_at === 'string') {
+    out.recorded_at_str = out.recorded_at;
+  } else if (out.recorded_at === null) {
+    out.recorded_at_str = null;
+  } else {
+    try {
+      const d = new Date(out.recorded_at);
+      if (!Number.isNaN(d.getTime())) out.recorded_at_str = d.toISOString();
+      else out.recorded_at_str = String(out.recorded_at);
+    } catch (e) {
+      out.recorded_at_str = String(out.recorded_at);
+    }
+  }
+
+  return out;
 }
 
 /**
@@ -425,6 +498,8 @@ app.get('/api/remote_stations', (req, res) => {
 });
 
 // Keep los fetch endpoint (uses fetchLosData from ./db)
+// NOTE: We map DB row columns (which may contain spaces/hyphens like "LoS-Temp(c)" / "LoS - PPM")
+// into normalized properties the frontend expects (los_temp, los_rx_light, los_r2, los_heartbeat, los_ppm).
 app.get('/api/los', async (req, res) => {
   const { from, to, limit, offset, serial_number } = req.query;
   let parsedLimit = 500;
@@ -439,7 +514,9 @@ app.get('/api/los', async (req, res) => {
   }
 
   try {
-    const rows = await fetchLosData(from || null, to || null, parsedLimit, parsedOffset, serial_number || null);
+    const rawRows = await fetchLosData(from || null, to || null, parsedLimit, parsedOffset, serial_number || null);
+    // Map DB rows to API-friendly shape expected by query-client.js
+    const rows = Array.isArray(rawRows) ? rawRows.map(mapDbRowToApi) : [];
     res.json({ ok: true, rows });
   } catch (err) {
     console.error('GET /api/los error:', err && err.message ? err.message : err);

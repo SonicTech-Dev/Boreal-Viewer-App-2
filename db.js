@@ -22,16 +22,17 @@ const pool = new Pool({
 
 /**
  * Insert a LoS reading into los_data table.
- * Expects losObj keys like:
- *   "LoS-Temp(c)", "LoS-Rx Light", "LoS- R2", "LoS-HeartBeat", "LoS - PPM"
+ * Accepts losObj keys in either normalized form (los_temp, los_ppm, etc)
+ * or the original DB column names ("LoS-Temp(c)", "LoS - PPM", ...).
  *
  * @param {string} topic
  * @param {object|string} rawPayload
  * @param {object} losObj
  * @param {string|Date} receivedAt
+ * @param {string|null} serialNumber  OPTIONAL: device serial number to store
  * @returns {Promise<object|null>} inserted row id or null on error
  */
-async function insertLosData(topic, rawPayload, losObj, receivedAt) {
+async function insertLosData(topic, rawPayload, losObj, receivedAt, serialNumber = null) {
   const recv = receivedAt ? new Date(receivedAt) : new Date();
 
   // normalize values - try to coerce to number where possible, otherwise null
@@ -41,16 +42,39 @@ async function insertLosData(topic, rawPayload, losObj, receivedAt) {
     return Number.isFinite(n) ? n : null;
   }
 
-  // Map expected column keys (matching your table)
-  const colTemp = losObj['LoS-Temp(c)'] ?? losObj['LoS-Temp(c)'.trim()] ?? null;
-  const colRxLight = losObj['LoS-Rx Light'] ?? losObj['LoS-Rx Light'.trim()] ?? null;
-  const colR2 = losObj['LoS- R2'] ?? losObj['LoS-R2'] ?? losObj['LoS - R2'] ?? null;
-  const colHeart = losObj['LoS-HeartBeat'] ?? losObj['LoS- HeartBeat'] ?? null;
-  const colPpm = losObj['LoS - PPM'] ?? losObj['LoS- PPM'] ?? losObj['LoS-PPM'] ?? null;
+  // helper: pick first defined key from losObj (accepts many variants)
+  function pick(...keys) {
+    for (const k of keys) {
+      if (losObj && Object.prototype.hasOwnProperty.call(losObj, k) && losObj[k] !== undefined) return losObj[k];
+    }
+    return undefined;
+  }
+
+  // Try many common variants including normalized names produced by server code
+  const colTemp = pick(
+    'los_temp',
+    'LoS-Temp(c)', 'LoS-Temp(C)', 'LoS-Temp', 'LoS Temp', 'lostemp', 'los_temp'
+  );
+  const colRxLight = pick(
+    'los_rx_light',
+    'LoS-Rx Light', 'LoS-RxLight', 'LoS Rx Light', 'losrxlight', 'los_rx_light'
+  );
+  const colR2 = pick(
+    'los_r2',
+    'LoS- R2', 'LoS-R2', 'LoS - R2', 'losr2', 'los_r2'
+  );
+  const colHeart = pick(
+    'los_heartbeat',
+    'LoS-HeartBeat', 'LoS- HeartBeat', 'losheartbeat', 'los_heartbeat'
+  );
+  const colPpm = pick(
+    'los_ppm',
+    'LoS - PPM', 'LoS- PPM', 'LoS-PPM', 'los_ppm', 'ppm', 'losppm', 'ppm_mlo'
+  );
 
   const sql = `
-    INSERT INTO los_data ("LoS-Temp(c)", "LoS-Rx Light", "LoS- R2", "LoS-HeartBeat", "LoS - PPM", recorded_at)
-    VALUES ($1, $2, $3, $4, $5, $6)
+    INSERT INTO los_data ("LoS-Temp(c)", "LoS-Rx Light", "LoS- R2", "LoS-HeartBeat", "LoS - PPM", recorded_at, serial_number)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
     RETURNING id;
   `;
   const values = [
@@ -59,7 +83,8 @@ async function insertLosData(topic, rawPayload, losObj, receivedAt) {
     numOrNull(colR2),
     numOrNull(colHeart),
     numOrNull(colPpm),
-    recv.toISOString()
+    recv.toISOString(),
+    serialNumber || null
   ];
 
   try {
@@ -76,10 +101,11 @@ async function insertLosData(topic, rawPayload, losObj, receivedAt) {
  * @param {string|Date|null} from inclusive start
  * @param {string|Date|null} to inclusive end
  * @param {number} limit
+ * @param {number} offset
+ * @param {string|null} serial_number  OPTIONAL: filter by serial_number if provided
  * @returns {Promise<Array>} rows
  */
-// Add "offset" parameter with default 0
-async function fetchLosData(from, to, limit = 500, offset = 0) {
+async function fetchLosData(from, to, limit = 500, offset = 0, serial_number = null) {
   const clauses = [];
   const values = [];
   let idx = 1;
@@ -93,8 +119,12 @@ async function fetchLosData(from, to, limit = 500, offset = 0) {
     values.push(new Date(to).toISOString());
   }
 
+  if (serial_number) {
+    clauses.push(`serial_number = $${idx++}`);
+    values.push(String(serial_number));
+  }
+
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-  // Add OFFSET $idx
   const sql = `
     SELECT id,
           "LoS-Temp(c)" AS los_temp,
@@ -103,7 +133,8 @@ async function fetchLosData(from, to, limit = 500, offset = 0) {
           "LoS-HeartBeat" AS los_heartbeat,
           "LoS - PPM" AS los_ppm,
           to_char(recorded_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Dubai', 'YYYY-MM-DD HH24:MI:SS') AS recorded_at_str,
-          recorded_at
+          recorded_at,
+          serial_number
     FROM los_data
     ${where}
     ORDER BY recorded_at DESC

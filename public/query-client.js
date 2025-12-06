@@ -34,6 +34,9 @@
   // Chart control injection guard
   let chartControlsInjected = false;
 
+  // custom pan state holder so we can attach/detach once per canvas
+  let __customPanAttached = false;
+
   // --- 24-hour preview helpers (polished look) ---
   function pad2(v) { return String(v).padStart(2, '0'); }
 
@@ -519,7 +522,7 @@
       }
 
       // CSV headers changed to match visible table labels
-      const headers = ['Recorded_At','Temp','Rx_Light','R2','HeartBeat','PPM'];
+      const headers = ['Recorded_At','Temp','Rx_Light','R2','HeartBeat','PPM-M-LO'];
       const lines = [headers.join(',')];
       rowsToExport.forEach(r => {
         const vals = [
@@ -694,7 +697,7 @@
     table.className = 'table';
     const thead = document.createElement('thead');
     const headerRow = document.createElement('tr');
-    ['Recorded_At','Temp','Rx_Light','R2','HeartBeat','PPM'].forEach(h => {
+    ['Recorded_At','Temp','Rx_Light','R2','HeartBeat','PPM-M-LO'].forEach(h => {
       const th = document.createElement('th');
       th.textContent = h;
       headerRow.appendChild(th);
@@ -1077,7 +1080,7 @@
       const ctx = chartCanvas.getContext('2d');
 
       const dataset = {
-        label: 'PPM',
+        label: 'PPM-M-LO',
         data: dataPts,
         borderColor: 'rgba(96,165,250,1)',
         backgroundColor: 'rgba(96,165,250,0.08)',
@@ -1120,13 +1123,13 @@
                 val = context.raw;
               }
             }
-            if (val === null || val === undefined || val === '') return 'PPM: n/a';
-            return `PPM: ${val}`;
+            if (val === null || val === undefined || val === '') return 'PPM-M-LO: n/a';
+            return `PPM-M-LO: ${val}`;
           }
         }
       };
 
-      // Zoom plugin options (chartjs-plugin-zoom) — if plugin is present, plugin will pick up these options.
+      // Zoom plugin options (chartjs-plugin-zoom) — we keep zoom (wheel/pinch) enabled but disable plugin pan
       const zoomPluginOptions = {
         // Enable wheel zoom and pinch zoom on x axis, and drag pan in x mode.
         zoom: {
@@ -1134,10 +1137,10 @@
           pinch: { enabled: true },
           mode: 'x'
         },
+        // disable built-in plugin pan because we implement a custom left-click drag pan (with inverted controls)
         pan: {
-          enabled: true,
-          mode: 'x',
-          // no modifier key required; adjust if you'd like a modifier to be required
+          enabled: false,
+          mode: 'xy'
         }
       };
 
@@ -1147,10 +1150,11 @@
         if (ppmChart.options.plugins && ppmChart.options.plugins.tooltip) {
           ppmChart.options.plugins.tooltip.callbacks = tooltipConfig.callbacks;
         }
-        // ensure y-axis begins at zero
-        if (ppmChart.options.scales && ppmChart.options.scales.y) {
-          ppmChart.options.scales.y.beginAtZero = true;
-        }
+        // ensure y-axis begins at zero and has correct label
+        if (!ppmChart.options.scales) ppmChart.options.scales = {};
+        if (!ppmChart.options.scales.y) ppmChart.options.scales.y = {};
+        ppmChart.options.scales.y.title = { display: true, text: 'PPM-M-LO' };
+        ppmChart.options.scales.y.beginAtZero = true;
         // attach zoom options if plugin available
         try {
           ppmChart.options.plugins.zoom = zoomPluginOptions;
@@ -1197,7 +1201,7 @@
               },
               y: {
                 display: true,
-                title: { display: true, text: 'PPM' },
+                title: { display: true, text: 'PPM-M-LO' },
                 beginAtZero: true
               }
             }
@@ -1210,6 +1214,9 @@
         // ensure controls and full view
         ensureChartControls();
         setFullView(ppmChart);
+
+        // attach custom left-click drag panning (inverted controls)
+        attachCustomPanToCanvas(ppmChart, chartCanvas);
       }
     } catch (e) {
       console.error('Chart render error', e);
@@ -1229,6 +1236,111 @@
     chart.__viewStart = 0;
     chart.__viewEnd = N - 1;
     try { chart.update('none'); } catch (e) { try { chart.update(); } catch (e2) {} }
+  }
+
+  // CUSTOM PANNING: attach left-button drag handlers that pan the chart.
+  // Controls are inverted per requirement: drag-left pans to the right, drag-up pans down.
+  function attachCustomPanToCanvas(chart, canvas) {
+    if (!chart || !canvas || __customPanAttached) return;
+    __customPanAttached = true;
+
+    let dragging = false;
+    let startPixel = { x: 0, y: 0 };
+    let startValue = { x: 0, y: 0 };
+    let startRange = { xMin: 0, xMax: 0, yMin: 0, yMax: 0 };
+
+    function preventSelection(e) {
+      e.preventDefault && e.preventDefault();
+      return false;
+    }
+
+    function onMouseDown(e) {
+      // left button only
+      if (e.button !== 0) return;
+      const rect = canvas.getBoundingClientRect();
+      const canvasX = (e.clientX - rect.left);
+      const canvasY = (e.clientY - rect.top);
+
+      const xScale = chart.scales.x;
+      const yScale = chart.scales.y;
+      if (!xScale || !yScale) return;
+
+      dragging = true;
+      canvas.style.cursor = 'grabbing';
+      startPixel.x = canvasX;
+      startPixel.y = canvasY;
+      try {
+        startValue.x = xScale.getValueForPixel(canvasX);
+        startValue.y = yScale.getValueForPixel(canvasY);
+      } catch (err) {
+        // fallback: estimate using left/top area
+        startValue.x = xScale.getValueForPixel(canvasX);
+        startValue.y = yScale.getValueForPixel(canvasY);
+      }
+      startRange.xMin = (typeof xScale.min === 'number') ? xScale.min : chart.options.scales.x.min || 0;
+      startRange.xMax = (typeof xScale.max === 'number') ? xScale.max : chart.options.scales.x.max || (chart.data.labels ? chart.data.labels.length - 1 : 0);
+      startRange.yMin = (typeof yScale.min === 'number') ? yScale.min : chart.options.scales.y.min || 0;
+      startRange.yMax = (typeof yScale.max === 'number') ? yScale.max : chart.options.scales.y.max || (chart.data.datasets && chart.data.datasets[0] && chart.data.datasets[0].data ? Math.max(...chart.data.datasets[0].data.filter(v => v !== null)) : 0);
+
+      // prevent page selection while dragging
+      document.addEventListener('selectstart', preventSelection);
+      document.addEventListener('dragstart', preventSelection);
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('mouseup', onMouseUp);
+    }
+
+    function onMouseMove(e) {
+      if (!dragging) return;
+      const rect = canvas.getBoundingClientRect();
+      const canvasX = (e.clientX - rect.left);
+      const canvasY = (e.clientY - rect.top);
+
+      const xScale = chart.scales.x;
+      const yScale = chart.scales.y;
+      if (!xScale || !yScale) return;
+
+      const curValX = xScale.getValueForPixel(canvasX);
+      const curValY = yScale.getValueForPixel(canvasY);
+
+      // value delta = cur - start. Inverted pan => shift by -delta
+      const deltaX = (curValX - startValue.x);
+      const deltaY = (curValY - startValue.y);
+
+      const newXMin = startRange.xMin - deltaX;
+      const newXMax = startRange.xMax - deltaX;
+      const newYMin = startRange.yMin - deltaY;
+      const newYMax = startRange.yMax - deltaY;
+
+      // Apply new ranges
+      try {
+        chart.options.scales.x.min = newXMin;
+        chart.options.scales.x.max = newXMax;
+        chart.options.scales.y.min = newYMin;
+        chart.options.scales.y.max = newYMax;
+        // update quickly without animation
+        chart.update('none');
+      } catch (err) {
+        // ignore errors (rare)
+      }
+    }
+
+    function onMouseUp() {
+      if (!dragging) return;
+      dragging = false;
+      canvas.style.cursor = 'default';
+      document.removeEventListener('selectstart', preventSelection);
+      document.removeEventListener('dragstart', preventSelection);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    }
+
+    // attach mousedown to canvas
+    canvas.style.cursor = 'grab';
+    canvas.addEventListener('mousedown', onMouseDown);
+    // clean up on window unload
+    window.addEventListener('beforeunload', () => {
+      try { canvas.removeEventListener('mousedown', onMouseDown); } catch (e) {}
+    });
   }
 
   // Expose for debugging in console if needed

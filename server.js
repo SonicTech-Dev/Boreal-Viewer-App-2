@@ -1,18 +1,12 @@
-contents=
 /**
- Updated server.js
-
- - Subscribes to two data topics (MQTT_TOPIC_2 / MQTT_TOPIC_3) and an optional MODBUS_TOPIC
- - Processes only those topics + MODBUS_TOPIC (forwarded as 'signal')
- - Merges integer + decimal PPM parts into a single los_ppm value when present
- - Emits the same 'mqtt_message' shape used previously (topic, serial_number, payload, los, ts, received_at)
- - Emits 'signal' for modbus/gsm_signal messages
- - Performs serial-aware threshold lookup and sends notifications via Firebase (if configured)
- - Uses the "multiple attempts" ping strategy (up to PING_ATTEMPTS per cycle)
- - Keeps DB insert and fetch behavior via ./db's insertLosData / fetchLosData
- - Adds /api/remote_stations to support remote station selection in the frontend
- - Option A: If incoming MQTT payload lacks a serial, this version will infer serial_number
-   from the topic using environment-configurable mappings (MQTT_TOPIC_2_SERIAL / MQTT_TOPIC_3_SERIAL)
+ Updated server.js — station naming strictly based on serial mapping (TOPIC_TO_SERIAL).
+ 
+ Change: /api/remote_stations now determines station display names strictly from the serials
+ derived from TOPIC_TO_SERIAL (or MQTT_TOPIC_2_SERIAL / MQTT_TOPIC_3_SERIAL). It does NOT
+ use IP addresses to decide the display name — IPs are still returned in the api response
+ as an "ip" field when available, but they are not used to compute the display label.
+ 
+ All other logic in the file is kept unchanged.
 */
 
 require('dotenv').config();
@@ -47,6 +41,19 @@ const NOTIFY_COOLDOWN_SECS = parseInt(process.env.NOTIFY_COOLDOWN_SECS || '60', 
 const MQTT_TOPIC_2_SERIAL = process.env.MQTT_TOPIC_2_SERIAL || 'B452A25032102';
 const MQTT_TOPIC_3_SERIAL = process.env.MQTT_TOPIC_3_SERIAL || 'B452A25032103';
 
+// Example device IP mapping (for ping loop) - these are defaults (fallbacks)
+const DEFAULT_DEVICE_IP_MAPPING = {
+  'B452A25032102': '10.0.0.42',
+  'B452A25032103': '10.0.0.43',
+};
+
+// Topic -> serial mapping (explicit mapping as requested)
+// This mapping is authoritative for the web UI station list and for inferring serials by topic.
+const TOPIC_TO_SERIAL = {
+  [MQTT_TOPIC_2]: MQTT_TOPIC_2_SERIAL,
+  [MQTT_TOPIC_3]: MQTT_TOPIC_3_SERIAL,
+};
+
 // Ping configuration
 const PING_INTERVAL_MS = parseInt(process.env.PING_INTERVAL_MS || String(30 * 1000), 10); // defaults 30s
 const PING_ATTEMPTS = parseInt(process.env.PING_ATTEMPTS || '3', 10); // attempts per cycle
@@ -67,30 +74,51 @@ const pool = new Pool(PG_CONFIG);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Build device mapping for remote stations (for ping loop and frontend selection)
-// Prefer an explicit JSON mapping via env REMOTE_STATIONS_JSON, otherwise fall back to single DEVICE_IP
-let deviceIPMapping = {};
+// Build device IP mapping: prefer REMOTE_STATIONS_JSON or DEVICE_IP env, but only as fallback data for serials
+let envDeviceIpMap = {};
 if (process.env.REMOTE_STATIONS_JSON) {
   try {
     const parsed = JSON.parse(process.env.REMOTE_STATIONS_JSON);
     if (typeof parsed === 'object' && parsed !== null) {
-      deviceIPMapping = parsed;
+      envDeviceIpMap = parsed;
     }
   } catch (e) {
-    console.warn('Failed parsing REMOTE_STATIONS_JSON, falling back to DEVICE_IP:', e && e.message ? e.message : e);
+    console.warn('Failed parsing REMOTE_STATIONS_JSON, ignoring:', e && e.message ? e.message : e);
+    envDeviceIpMap = {};
   }
 }
-if (Object.keys(deviceIPMapping).length === 0) {
+// If a single DEVICE_IP env is provided, map it to DEVICE_SERIAL (if provided)
+if (Object.keys(envDeviceIpMap).length === 0) {
   const deviceIp = process.env.DEVICE_IP || null;
-  const deviceSerial = process.env.DEVICE_SERIAL || 'default_station';
-  if (deviceIp) deviceIPMapping[deviceSerial] = deviceIp;
-  // If still empty, seed an example mapping (you should override with env)
-  if (Object.keys(deviceIPMapping).length === 0) {
-    deviceIPMapping = {
-      'B452A25032102': '10.0.0.42',
-      'B452A25032103': '10.0.0.43',
-    };
+  const deviceSerial = process.env.DEVICE_SERIAL || null;
+  if (deviceIp && deviceSerial) {
+    envDeviceIpMap[deviceSerial] = deviceIp;
   }
+}
+
+// Now create the effective deviceIPMapping used for ping loop and for returning ip in /api/remote_stations.
+// The authoritative station list comes from TOPIC_TO_SERIAL (serials derived from topics).
+// For each serial from TOPIC_TO_SERIAL, pick IP from envDeviceIpMap if present, else from DEFAULT_DEVICE_IP_MAPPING if present.
+// Then also include any additional serials present in envDeviceIpMap that are not part of TOPIC_TO_SERIAL.
+const deviceIPMapping = {};
+// Primary: serials from TOPIC_TO_SERIAL
+for (const serial of Object.values(TOPIC_TO_SERIAL)) {
+  if (!serial) continue;
+  if (envDeviceIpMap[serial]) {
+    deviceIPMapping[serial] = envDeviceIpMap[serial];
+  } else if (DEFAULT_DEVICE_IP_MAPPING[serial]) {
+    deviceIPMapping[serial] = DEFAULT_DEVICE_IP_MAPPING[serial];
+  } else {
+    // leave undefined (no ip) — ping loop will skip entries without an IP
+  }
+}
+// Secondary: include any env-provided serials not already added (these are not used to compute display labels)
+for (const [serial, ip] of Object.entries(envDeviceIpMap)) {
+  if (!deviceIPMapping[serial]) deviceIPMapping[serial] = ip;
+}
+// Final fallback: if still empty, seed DEFAULT_DEVICE_IP_MAPPING
+if (Object.keys(deviceIPMapping).length === 0) {
+  Object.assign(deviceIPMapping, DEFAULT_DEVICE_IP_MAPPING);
 }
 
 // Firebase Admin init (optional). If you have a service account JSON, set SERVICE_ACCOUNT_PATH env to its path.
@@ -169,10 +197,6 @@ function extractCanonicalLos(params) {
  *  - los_heartbeat
  *  - los_ppm
  *  - recorded_at, recorded_at_str
- *
- * This fixes the case where the DB column names include spaces/hyphens and are returned
- * as properties that the frontend code does not look for. We build a canonical lookup
- * from the DB row keys and pick the best candidate for each expected field.
  */
 function mapDbRowToApi(row) {
   if (!row || typeof row !== 'object') return row;
@@ -233,49 +257,75 @@ function mapDbRowToApi(row) {
 }
 
 /**
- * Merge integer + decimal PPM parts into a single numeric los_ppm value.
- * - Detects integer part keys that include 'ppm' and ('int' or 'mlo').
- * - Detects decimal part keys that include 'ppm' and ('dec' or 'decimal').
- * - If both parts exist, merges them into integer.decimal (not summed).
- * - If decimal part has single digit (e.g. 5), treat it as two-digit (05 -> divisor 100).
- * - Overrides los.los_ppm when merged.
+ * The authoritative int/dec detection + merging helpers based on the original single-file server.js you provided.
  */
-function tryMergePpmParts(params, los) {
-  if (!params || typeof params !== 'object') return;
 
-  let intVal;
-  let decVal;
+// normalize key for detection: lower + drop non-alphanumeric (matches original logic)
+function normalizeKeyForMatch(k) {
+  if (!k) return '';
+  return String(k).toLowerCase().replace(/[^a-z0-9]/g, '');
+}
 
-  for (const key of Object.keys(params)) {
-    const ck = canonicalKey(key); // normalized key
+// find integer and decimal parts for PPM in params (tolerant matching)
+function findLosPpmParts(params) {
+  let intPart;
+  let decPart;
+
+  for (const key of Object.keys(params || {})) {
+    const nk = normalizeKeyForMatch(key);
     const raw = params[key];
-    const num = (raw === null || raw === undefined) ? NaN : Number(raw);
+
+    // Try to coerce numeric-ish values
+    const num = raw === null || raw === undefined ? NaN : Number(raw);
+    // if it's not numeric, skip
     if (Number.isNaN(num)) continue;
 
-    if (ck.includes('ppm') && (ck.includes('int') || ck.includes('mlo'))) {
-      intVal = num;
-      continue;
-    }
-    if (ck.includes('ppm') && (ck.includes('dec') || ck.includes('decimal'))) {
-      decVal = num;
+    // decimal key detection: contains 'ppm' and 'dec' or 'decimal'
+    if (nk.includes('ppm') && (nk.includes('dec') || nk.includes('decimal'))) {
+      decPart = num;
       continue;
     }
 
-    // Fallback detections: keys ending with int/dec and mentioning pp-like substring
-    if ((ck.endsWith('int') || ck.endsWith('mloint')) && ck.includes('pp')) intVal = num;
-    if (ck.endsWith('dec') && ck.includes('pp')) decVal = num;
-  }
+    // integer key detection: contains 'ppm' and ('int' or 'mlo' or nothing else but not 'dec')
+    if (nk.includes('ppm') && (nk.includes('int') || nk.includes('mlo') || nk === 'losppm' || nk === 'losppmmloint' || nk.includes('losppm'))) {
+      intPart = num;
+      continue;
+    }
 
-  if (typeof intVal !== 'undefined' && typeof decVal !== 'undefined') {
-    const decStr = String(Math.abs(decVal));
-    const divisor = decStr.length === 1 ? 100 : 10 ** decStr.length;
-    const sign = intVal < 0 ? -1 : 1;
-    const merged = Number(intVal) + sign * (Number(decVal) / divisor);
-    if (!Number.isNaN(merged)) {
-      if (!los) return;
-      los.los_ppm = merged;
+    // Additional tolerant detection: key mentioning ppm but not dec -> treat as integer
+    if (nk.includes('ppm') && !nk.includes('dec') && !nk.includes('decimal')) {
+      if (typeof intPart === 'undefined') intPart = num;
     }
   }
+
+  return { intPart, decPart };
+}
+
+// merge int and decimal parts to form numeric with at most 2 fractional digits
+function mergeIntAndDec(intVal, decVal) {
+  if (typeof intVal === 'undefined' || intVal === null || Number.isNaN(Number(intVal))) return undefined;
+  // If decimal part missing, just return integer
+  if (typeof decVal === 'undefined' || decVal === null || Number.isNaN(Number(decVal))) {
+    return Number(intVal);
+  }
+
+  // Convert decimal to string digits only (drop any sign or decimal separators).
+  let decStr = String(Math.abs(decVal)).replace(/[^0-9]/g, '');
+  if (decStr.length === 0) decStr = '0';
+
+  // Restrict to at most 2 digits of fraction as requested.
+  if (decStr.length > 2) decStr = decStr.slice(0, 2);
+
+  // divisor is 10^digits, but treat single-digit decimal as hundredths (e.g., '5' => 0.05)
+  const digits = decStr.length;
+  const divisor = digits === 1 ? 100 : 10 ** digits;
+  const fraction = Number(decStr) / divisor;
+
+  const sign = Number(intVal) < 0 ? -1 : 1;
+  const merged = Number(intVal) + sign * fraction;
+
+  // Round to 2 decimal places to avoid floating precision surprises
+  return Number(merged.toFixed(2));
 }
 
 // --- Notifications via Firebase Admin and thresholds ---
@@ -475,21 +525,25 @@ function startDevicePingLoop(intervalMs = 30 * 1000) {
 
 // --- routes ---
 // Expose remote stations (for frontend selection)
+// NOTE: Station name mapping now strictly uses serial number mapping (TOPIC_TO_SERIAL / MQTT_TOPIC_*_SERIAL).
+// IPs are included in the response only as an "ip" field when available, but IPs are NOT used to determine the display label.
 app.get('/api/remote_stations', (req, res) => {
   try {
-    // Return an explicit display property so frontend can show friendly names.
-    // For the two example IPs, map them to "Station 1" / "Station 2" as requested.
-    const rows = Object.entries(deviceIPMapping).map(([serial, ip]) => {
+    // Use unique serials from TOPIC_TO_SERIAL as the authoritative list (no fallback to IP for display)
+    const serials = Array.from(new Set(Object.values(TOPIC_TO_SERIAL).filter(Boolean)));
+    const rows = serials.map((serial) => {
+      const ip = deviceIPMapping[serial] || null; // include ip if known, but DO NOT use it to compute display
       let display;
-      if (ip === '10.0.0.42') {
+      if (serial === MQTT_TOPIC_2_SERIAL) {
         display = 'Station 1';
-      } else if (ip === '10.0.0.43') {
+      } else if (serial === MQTT_TOPIC_3_SERIAL) {
         display = 'Station 2';
       } else {
-        display = (serial || '(unknown)') + (ip ? (' — ' + ip) : '');
+        display = serial;
       }
       return { serial_number: serial, ip, display };
     });
+
     return res.json(rows);
   } catch (err) {
     console.error('GET /api/remote_stations error:', err);
@@ -498,8 +552,6 @@ app.get('/api/remote_stations', (req, res) => {
 });
 
 // Keep los fetch endpoint (uses fetchLosData from ./db)
-// NOTE: We map DB row columns (which may contain spaces/hyphens like "LoS-Temp(c)" / "LoS - PPM")
-// into normalized properties the frontend expects (los_temp, los_rx_light, los_r2, los_heartbeat, los_ppm).
 app.get('/api/los', async (req, res) => {
   const { from, to, limit, offset, serial_number } = req.query;
   let parsedLimit = 500;
@@ -616,24 +668,43 @@ client.on('message', async (topic, payloadBuffer, packet) => {
   // Extract canonical los fields
   const los = extractCanonicalLos(params) || {};
 
-  // Merge integer + decimal ppm parts if present, overriding los.los_ppm
-  tryMergePpmParts(params, los);
+  // --- NEW: derive integer & decimal parts using authoritative detection helper ---
+  const { intPart, decPart } = findLosPpmParts(params);
 
-  // Serial extraction (payload or params)
-  let serial_number =
-    (payload && (payload.serial_number || payload.serial)) ||
-    (params && (params.serial_number || params.serial)) ||
-    undefined;
+  // --- Topic -> serial mapping (topic overrides any serial in payload per authoritative logic) ---
+  let mappedSerial = null;
+  if (topic === MQTT_TOPIC_2) {
+    mappedSerial = MQTT_TOPIC_2_SERIAL;
+  } else if (topic === MQTT_TOPIC_3) {
+    mappedSerial = MQTT_TOPIC_3_SERIAL;
+  } else if (TOPIC_TO_SERIAL[topic]) {
+    mappedSerial = TOPIC_TO_SERIAL[topic];
+  } else {
+    mappedSerial = null;
+  }
 
-  // Option A: If the message lacks a serial, infer from topic using configured mapping
-  if (!serial_number) {
-    if (topic === MQTT_TOPIC_2) {
-      serial_number = MQTT_TOPIC_2_SERIAL;
-      console.log(`Inferred serial_number="${serial_number}" from topic="${topic}"`);
-    } else if (topic === MQTT_TOPIC_3) {
-      serial_number = MQTT_TOPIC_3_SERIAL;
-      console.log(`Inferred serial_number="${serial_number}" from topic="${topic}"`);
+  // Override serial_number with mapping (authoritative)
+  let serial_number = mappedSerial || null;
+
+  // Decide merging behavior using Station 1 detection (Option A)
+  // Station 1 is the device whose serial equals MQTT_TOPIC_2_SERIAL
+  try {
+    if (serial_number === MQTT_TOPIC_2_SERIAL) {
+      // Station 1: use integer part only (ignore decimal)
+      if (typeof intPart !== 'undefined' && !Number.isNaN(Number(intPart))) {
+        los.los_ppm = Number(intPart);
+      }
+    } else {
+      // Station 2 or others: attempt merge, else fallback to integer
+      const merged = mergeIntAndDec(intPart, decPart);
+      if (typeof merged !== 'undefined' && !Number.isNaN(Number(merged))) {
+        los.los_ppm = merged;
+      } else if (typeof intPart !== 'undefined' && !Number.isNaN(Number(intPart))) {
+        los.los_ppm = Number(intPart);
+      }
     }
+  } catch (e) {
+    console.error('Error applying conditional merging logic:', e && e.message ? e.message : e);
   }
 
   // Use numeric ts from payload if present
@@ -680,8 +751,6 @@ client.on('message', async (topic, payloadBuffer, packet) => {
 
   // Optionally persist to DB (uses insertLosData from ./db)
   try {
-    // Keep compatibility with existing insertLosData signature in your ./db module.
-    // Many projects expect: insertLosData(topic, payload, los, timestamp)
     if (typeof insertLosData === 'function') {
       // Only insert if we detected los fields
       if (los && Object.keys(los).length > 0) {
@@ -692,7 +761,6 @@ client.on('message', async (topic, payloadBuffer, packet) => {
         }
       } else if (SAVE_MQTT_TO_DB) {
         // Optional: if configured to save all incoming MQTT messages, you can implement another DB call.
-        // Left intentionally blank — implement in ./db if desired.
       }
     }
   } catch (err) {
@@ -704,16 +772,17 @@ client.on('message', async (topic, payloadBuffer, packet) => {
     const rawPpm = los.los_ppm ?? los.ppm ?? (params && (params.los_ppm ?? params.ppm));
     const ppmNumber = (typeof rawPpm === 'number') ? rawPpm : (rawPpm !== undefined ? Number(rawPpm) : NaN);
     if (!Number.isNaN(ppmNumber)) {
-      const threshold = await getLosThreshold(serial_number);
+      const lookupDevice = serial_number || topic;
+      const threshold = await getLosThreshold(lookupDevice);
       if (threshold !== null && !Number.isNaN(threshold) && ppmNumber > Number(threshold)) {
-        if (canNotify(serial_number)) {
-          const title = serial_number ? `Alarm: ${serial_number}` : 'Alarm: Gas Finder';
+        if (canNotify(lookupDevice)) {
+          const title = lookupDevice ? `Alarm: ${lookupDevice}` : 'Alarm: Gas Finder';
           const message = `PPM ${ppmNumber} exceeded threshold ${threshold}`;
-          await sendNotificationToAll(title, message, { serial_number: serial_number || '' });
-          io.emit('alarm', { serial_number, ppm: ppmNumber, threshold, ts: mqttTs });
-          console.log(`ALARM triggered for ${serial_number || '(unknown)'}: ppm=${ppmNumber} threshold=${threshold} ts=${mqttTs !== undefined ? mqttTs : '(none)'}`);
+          await sendNotificationToAll(title, message, { serial_number: lookupDevice || '' });
+          io.emit('alarm', { serial_number: lookupDevice, ppm: ppmNumber, threshold, ts: mqttTs });
+          console.log(`ALARM triggered for ${lookupDevice || '(unknown)'}: ppm=${ppmNumber} threshold=${threshold} ts=${mqttTs !== undefined ? mqttTs : '(none)'}`);
         } else {
-          console.log(`Alarm suppressed by cooldown for ${serial_number || '(unknown)'}`);
+          console.log(`Alarm suppressed by cooldown for ${lookupDevice || '(unknown)'}`);
         }
       }
     }

@@ -1,5 +1,5 @@
 // client.js — live UI: receives mqtt_message, updates real-time tiles with popup details and feed.
-// Fix: prefer exact canonical key matches before tolerant/includes matching so merged PPM wins.
+// Fix: prefer server-provided los object (server-side merging) over client-side recompute.
 // Label change: renamed GasFinder-PPM -> PPM-M-LO
 //
 // NOTE: Popup hover removed — tiles now do nothing on hover.
@@ -210,22 +210,16 @@
       if (!res.ok) throw new Error('failed');
       const json = await res.json();
       if (Array.isArray(json)) {
+        // Use server-provided display label (authoritative by serial). Do NOT remap by IP here.
         remoteStations = json.map(r => {
           const serial = r.serial_number || r.serial || r.serialNumber || '';
           const ip = r.ip || r.ip_address || '';
-          // SIMPLE, DIRECT OVERRIDE: map known IPs to friendly Station names (no other behavior changed)
-          let display;
-          if (ip === '10.0.0.42') {
-            display = 'Station 1';
-          } else if (ip === '10.0.0.43') {
-            display = 'Station 2';
-          } else {
-            display = (serial || '(unknown)') + (ip ? (' — ' + ip) : '');
-          }
+          const display = r.display || (serial || '(unknown)'); // strictly prefer server-provided display
           return { serial_number: serial, ip, display, canonical: canonicalKey(serial) };
         });
       } else if (json && typeof json === 'object') {
-        remoteStations = Object.keys(json).map(k => ({ serial_number: k, ip: json[k], display: (k + ' — ' + json[k]), canonical: canonicalKey(k) }));
+        // If server returned an object map (serial -> ip), derive list using serial only (no IP-based naming)
+        remoteStations = Object.keys(json).map(k => ({ serial_number: k, ip: json[k], display: k, canonical: canonicalKey(k) }));
       } else {
         remoteStations = [];
       }
@@ -474,65 +468,77 @@
       return;
     }
 
+    // Prefer server-provided los object when available (server has already applied merging rules)
+    let los = null;
+    if (msg.los && typeof msg.los === 'object' && Object.keys(msg.los).length > 0) {
+      // clone to avoid mutating the original
+      los = Object.assign({}, msg.los);
+    }
+
     let params = null;
-    if (msg.payload && typeof msg.payload === 'object') {
-      params = (msg.payload.params && typeof msg.payload.params === 'object') ? msg.payload.params : msg.payload;
-    } else if (typeof msg.raw === 'string') {
-      try {
-        const parsed = JSON.parse(msg.raw);
-        params = (parsed && parsed.params && typeof parsed.params === 'object') ? parsed.params : parsed;
-      } catch (e) {
-        params = null;
-      }
-    }
-    if (!params || typeof params !== 'object') return;
-
-    // Build canonical map and detect ppm int+dec
-    const pmap = {};
-    Object.keys(params).forEach(k => { pmap[canonicalKey(k)] = { originalKey: k, value: params[k] }; });
-
-    let intVal, decVal;
-    for (const [ck, entry] of Object.entries(pmap)) {
-      const raw = entry.value;
-      const num = (raw === null || raw === undefined) ? NaN : Number(raw);
-      if (Number.isNaN(num)) continue;
-      if (ck.includes('pp') && (ck.includes('int') || ck.includes('mlo'))) { intVal = num; continue; }
-      if (ck.includes('pp') && (ck.includes('dec') || ck.includes('decimal'))) { decVal = num; continue; }
-      if ((ck.endsWith('int') || ck.endsWith('mloint')) && ck.includes('pp')) intVal = num;
-      if (ck.endsWith('dec') && ck.includes('pp')) decVal = num;
-    }
-
-    // MERGING: correctly combine integer and decimal parts
-    let mergedPpm = null;
-    if (typeof intVal !== 'undefined' && typeof decVal !== 'undefined') {
-      const iPart = Number(intVal);
-      if (Number.isFinite(iPart)) {
-        const decInt = Math.trunc(Math.abs(Number(decVal)));
-        if (Number.isFinite(decInt)) {
-          const decStr = String(decInt);
-          const divisor = (decStr.length === 1) ? 10 : Math.pow(10, decStr.length);
-          const sign = (iPart < 0) ? -1 : 1;
-          const absMerged = Math.abs(iPart) + (decInt / divisor);
-          const merged = sign < 0 ? -absMerged : absMerged;
-          mergedPpm = Number.isFinite(merged) ? merged : null;
+    if (!los) {
+      if (msg.payload && typeof msg.payload === 'object') {
+        params = (msg.payload.params && typeof msg.payload.params === 'object') ? msg.payload.params : msg.payload;
+      } else if (typeof msg.raw === 'string') {
+        try {
+          const parsed = JSON.parse(msg.raw);
+          params = (parsed && parsed.params && typeof parsed.params === 'object') ? parsed.params : parsed;
+        } catch (e) {
+          params = null;
         }
       }
+      if (!params || typeof params !== 'object') params = {};
     }
 
-    // Collect los-like keys
-    const los = {};
-    Object.keys(params).forEach(kName => {
-      if (typeof kName === 'string' && kName.trim().toLowerCase().startsWith('los')) {
-        los[kName] = params[kName];
+    // If server didn't provide los, build los from params and perform client-side merge detection as fallback.
+    let mergedPpm = null;
+    if (!los) {
+      // Build canonical map and detect ppm int+dec
+      const pmap = {};
+      Object.keys(params).forEach(k => { pmap[canonicalKey(k)] = { originalKey: k, value: params[k] }; });
+
+      let intVal, decVal;
+      for (const [ck, entry] of Object.entries(pmap)) {
+        const raw = entry.value;
+        const num = (raw === null || raw === undefined) ? NaN : Number(raw);
+        if (Number.isNaN(num)) continue;
+        if (ck.includes('pp') && (ck.includes('int') || ck.includes('mlo'))) { intVal = num; continue; }
+        if (ck.includes('pp') && (ck.includes('dec') || ck.includes('decimal'))) { decVal = num; continue; }
+        if ((ck.endsWith('int') || ck.endsWith('mloint')) && ck.includes('pp')) intVal = num;
+        if (ck.endsWith('dec') && ck.includes('pp')) decVal = num;
       }
-    });
 
-    // If mergedPpm present, inject a canonical PPM key so matching works
-    if (mergedPpm !== null) {
-      los['LoS-PPM'] = mergedPpm;
+      // MERGING: correctly combine integer and decimal parts (client-side fallback only)
+      if (typeof intVal !== 'undefined' && typeof decVal !== 'undefined') {
+        const iPart = Number(intVal);
+        if (Number.isFinite(iPart)) {
+          const decInt = Math.trunc(Math.abs(Number(decVal)));
+          if (Number.isFinite(decInt)) {
+            const decStr = String(decInt);
+            const divisor = (decStr.length === 1) ? 10 : Math.pow(10, decStr.length);
+            const sign = (iPart < 0) ? -1 : 1;
+            const absMerged = Math.abs(iPart) + (decInt / divisor);
+            const merged = sign < 0 ? -absMerged : absMerged;
+            mergedPpm = Number.isFinite(merged) ? merged : null;
+          }
+        }
+      }
+
+      // Collect los-like keys from params
+      los = {};
+      Object.keys(params).forEach(kName => {
+        if (typeof kName === 'string' && kName.trim().toLowerCase().startsWith('los')) {
+          los[kName] = params[kName];
+        }
+      });
+
+      // If mergedPpm present and no server los, inject a canonical PPM key so matching works
+      if (mergedPpm !== null) {
+        los['LoS-PPM'] = mergedPpm;
+      }
     }
 
-    if (Object.keys(los).length === 0) return;
+    if (!los || Object.keys(los).length === 0) return;
 
     // If device offline for the selected station, ignore incoming readings
     if (deviceOnline === false) {
@@ -571,9 +577,14 @@
         }
       }
 
-      // final fallback: if mapping is PPM and mergedPpm exists and wasn't matched above, set it
-      if (!found && mapping.apiField === 'los_ppm' && mergedPpm !== null) {
-        latest[mapping.label] = { value: mergedPpm, updated_at: ts, raw: los };
+      // final fallback: if mapping is PPM and we have mergedPpm (client-side fallback) and wasn't matched above, set it
+      if (!found && mapping.apiField === 'los_ppm') {
+        // Prefer server-provided los.los_ppm if given
+        if (los && (los.los_ppm !== undefined)) {
+          latest[mapping.label] = { value: los.los_ppm, updated_at: ts, raw: los };
+        } else if (mergedPpm !== null) {
+          latest[mapping.label] = { value: mergedPpm, updated_at: ts, raw: los };
+        }
       }
     });
 

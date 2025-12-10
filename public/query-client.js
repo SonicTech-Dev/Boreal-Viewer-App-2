@@ -58,104 +58,23 @@
     return formatDateTo24Short(d);
   }
 
-  // inject styles for preview (only once)
+  // NOTE: visual 24-hour previews have been removed as requested.
+  // The functions below are retained as no-ops to avoid changing any functional behavior.
   (function injectPreviewStyles() {
-    if (document.getElementById('__dt24_preview_styles__')) return;
-    const css = `
-      .dt24-preview {
-        margin-left: 12px;
-        color: var(--muted);
-        background: rgba(255,255,255,0.02);
-        border: 1px solid rgba(255,255,255,0.03);
-        padding: 5px 10px;
-        font-size: 13px;
-        border-radius: 8px;
-        display: inline-block;
-        min-width: 170px;
-        text-align: left;
-        user-select: none;
-        pointer-events: none;
-        box-shadow: 0 6px 14px rgba(2,6,23,0.35);
-      }
-
-      /* extra separation specifically when the preview follows the FROM input */
-      .dt24-preview.dt24-preview--from {
-        margin-right: 40px; /* visual gap between FROM block and TO block */
-      }
-
-      /* Slightly smaller on very small screens */
-      @media (max-width:800px) {
-        .dt24-preview {
-          min-width: 140px;
-          padding: 4px 8px;
-          margin-left: 10px;
-        }
-        .dt24-preview.dt24-preview--from {
-          margin-right: 20px;
-        }
-      }
-      @media (max-width:420px) {
-        .dt24-preview { font-size:12px; min-width: 120px; padding:4px 8px; margin-left:8px; }
-        .dt24-preview.dt24-preview--from { margin-right: 8px; display:block; margin-top:6px; }
-      }
-    `;
-    const s = document.createElement('style');
-    s.id = '__dt24_preview_styles__';
-    s.type = 'text/css';
-    s.appendChild(document.createTextNode(css));
-    (document.head || document.documentElement).appendChild(s);
+    // intentionally left blank to remove preview visual boxes
+    return;
   })();
 
   function create24Preview(inputEl) {
-    if (!inputEl) return () => {};
-    // Avoid creating duplicate preview
-    if (inputEl.__dt24_preview_el__) {
-      // return updater
-      return () => {
-        if (inputEl.__dt24_preview_el__) inputEl.__dt24_preview_el__.textContent = formatInputValueTo24(inputEl.value) || '';
-      };
-    }
-
-    const span = document.createElement('span');
-    span.className = 'dt24-preview';
-    // Add special class for the FROM input so we can give a larger right margin (visual only)
-    if (inputEl.id === 'from' || inputEl === fromInput) {
-      span.classList.add('dt24-preview--from');
-    }
-    span.setAttribute('aria-hidden', 'true');
-    span.textContent = formatInputValueTo24(inputEl.value) || '';
-
-    // Insert after the input element
-    if (inputEl.parentNode) {
-      // prefer inserting after input so it sits visually next to it
-      if (inputEl.nextSibling) inputEl.parentNode.insertBefore(span, inputEl.nextSibling);
-      else inputEl.parentNode.appendChild(span);
-    } else {
-      // fallback: append to body (shouldn't normally happen)
-      document.body.appendChild(span);
-    }
-
-    // updater
-    const upd = () => {
-      try {
-        span.textContent = formatInputValueTo24(inputEl.value) || '';
-      } catch (e) { /* ignore */ }
-    };
-
-    // wire events
-    inputEl.addEventListener('input', upd);
-    inputEl.addEventListener('change', upd);
-
-    // store reference and return updater
-    inputEl.__dt24_preview_el__ = span;
-    return upd;
+    // intentionally a noop — previews removed
+    return () => {};
   }
 
-  // Create previews and keep updater functions
+  // Create previews and keep updater functions (noop)
   const updateFromPreview = create24Preview(fromInput);
   const updateToPreview = create24Preview(toInput);
 
-  // Ensure previews update on user interactions that change inputs
+  // Ensure previews update on user interactions that change inputs (noop handlers)
   if (fromInput) {
     fromInput.addEventListener('input', () => {
       try { updateFromPreview(); } catch (e) { /* ignore */ }
@@ -598,6 +517,18 @@
       if (toISO) params.set('to', toISO);
       params.set('limit', String(pageSize));
       params.set('offset', String(pageIndex * pageSize));
+
+      // Include currently selected station serial_number if available so server returns station-scoped rows
+      try {
+        const stationSelect = document.getElementById('station-select');
+        const selSerial = stationSelect && stationSelect.selectedOptions && stationSelect.selectedOptions[0]
+          ? stationSelect.selectedOptions[0].dataset.serial
+          : null;
+        if (selSerial) params.set('serial_number', selSerial);
+      } catch (e) {
+        // ignore if select not present
+      }
+
       const r = await fetch('/api/los?' + params.toString());
       if (!r.ok) throw new Error('Server returned ' + r.status);
       const data = await r.json();

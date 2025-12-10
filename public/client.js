@@ -237,6 +237,7 @@
       const opt = document.createElement('option');
       opt.value = rs.canonical; // store canonical serial as value
       opt.dataset.display = rs.display;
+      opt.dataset.serial = rs.serial_number || ''; // <-- store actual serial for queries
       opt.textContent = rs.display;
       select.appendChild(opt);
     });

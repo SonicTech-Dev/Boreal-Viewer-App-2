@@ -308,6 +308,10 @@ function mergeIntAndDec(intVal, decVal) {
   if (typeof decVal === 'undefined' || decVal === null || Number.isNaN(Number(decVal))) {
     return Number(intVal);
   }
+  // If integer is exactly zero, ignore decimals and return 0
+  if (Number(intVal) === 0) {
+    return 0;
+  }
 
   // Convert decimal to string digits only (drop any sign or decimal separators).
   let decStr = String(Math.abs(decVal)).replace(/[^0-9]/g, '');

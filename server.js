@@ -1,11 +1,11 @@
 /**
  Updated server.js — station naming strictly based on serial mapping (TOPIC_TO_SERIAL).
- 
+
  Change: /api/remote_stations now determines station display names strictly from the serials
  derived from TOPIC_TO_SERIAL (or MQTT_TOPIC_2_SERIAL / MQTT_TOPIC_3_SERIAL). It does NOT
  use IP addresses to decide the display name — IPs are still returned in the api response
  as an "ip" field when available, but they are not used to compute the display label.
- 
+
  All other logic in the file is kept unchanged.
 */
 
@@ -29,7 +29,9 @@ const MQTT_URL = process.env.MQTT_URL || 'mqtt://localhost:1883';
 const MQTT_PREFIX = process.env.MQTT_PREFIX || 'BivicomData';
 const MQTT_TOPIC_2 = process.env.MQTT_TOPIC_2 || `${MQTT_PREFIX}2`;
 const MQTT_TOPIC_3 = process.env.MQTT_TOPIC_3 || `${MQTT_PREFIX}3`;
-const DATA_TOPICS = [MQTT_TOPIC_2, MQTT_TOPIC_3];
+const MQTT_TOPIC_4 = process.env.MQTT_TOPIC_4 || `${MQTT_PREFIX}4`;
+const MQTT_TOPIC_5 = process.env.MQTT_TOPIC_5 || `${MQTT_PREFIX}5`;
+const DATA_TOPICS = [MQTT_TOPIC_2, MQTT_TOPIC_3, MQTT_TOPIC_4, MQTT_TOPIC_5];
 const MODBUS_TOPIC = process.env.MODBUS_TOPIC || 'modbus/gsm_signal';
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : (process.env.PORT || 3000);
 const SAVE_MQTT_TO_DB = (process.env.SAVE_MQTT_TO_DB === '1') || false;
@@ -39,12 +41,16 @@ const NOTIFY_COOLDOWN_SECS = parseInt(process.env.NOTIFY_COOLDOWN_SECS || '60', 
 // Provide MQTT_TOPIC_2_SERIAL and MQTT_TOPIC_3_SERIAL in .env to match your devices.
 // Defaults are the example serials used previously.
 const MQTT_TOPIC_2_SERIAL = process.env.MQTT_TOPIC_2_SERIAL || 'B452A25032102';
-const MQTT_TOPIC_3_SERIAL = process.env.MQTT_TOPIC_3_SERIAL || 'B452A25032103';
+const MQTT_TOPIC_3_SERIAL = process.env.MQTT_TOPIC_3_SERIAL || 'B462A25032001';
+const MQTT_TOPIC_4_SERIAL = process.env.MQTT_TOPIC_4_SERIAL || 'B452A25032103';
+const MQTT_TOPIC_5_SERIAL = process.env.MQTT_TOPIC_5_SERIAL || 'B323A25032002';
 
 // Example device IP mapping (for ping loop) - these are defaults (fallbacks)
 const DEFAULT_DEVICE_IP_MAPPING = {
   'B452A25032102': '10.0.0.42',
+  'B462A25032001': '10.0.0.46',
   'B452A25032103': '10.0.0.43',
+  'B323A25032002': '10.0.0.45',
 };
 
 // Topic -> serial mapping (explicit mapping as requested)
@@ -52,6 +58,8 @@ const DEFAULT_DEVICE_IP_MAPPING = {
 const TOPIC_TO_SERIAL = {
   [MQTT_TOPIC_2]: MQTT_TOPIC_2_SERIAL,
   [MQTT_TOPIC_3]: MQTT_TOPIC_3_SERIAL,
+  [MQTT_TOPIC_4]: MQTT_TOPIC_4_SERIAL,
+  [MQTT_TOPIC_5]: MQTT_TOPIC_5_SERIAL,
 };
 
 // Ping configuration
@@ -542,6 +550,10 @@ app.get('/api/remote_stations', (req, res) => {
         display = 'Station 1';
       } else if (serial === MQTT_TOPIC_3_SERIAL) {
         display = 'Station 2';
+      } else if (serial === MQTT_TOPIC_4_SERIAL) {
+        display = 'Station 3';
+      } else if (serial === MQTT_TOPIC_5_SERIAL) {
+        display = 'Station 4';
       } else {
         display = serial;
       }
@@ -681,6 +693,10 @@ client.on('message', async (topic, payloadBuffer, packet) => {
     mappedSerial = MQTT_TOPIC_2_SERIAL;
   } else if (topic === MQTT_TOPIC_3) {
     mappedSerial = MQTT_TOPIC_3_SERIAL;
+  } else if (topic === MQTT_TOPIC_4) {
+    mappedSerial = MQTT_TOPIC_4_SERIAL;
+  } else if (topic === MQTT_TOPIC_5) {
+    mappedSerial = MQTT_TOPIC_5_SERIAL;
   } else if (TOPIC_TO_SERIAL[topic]) {
     mappedSerial = TOPIC_TO_SERIAL[topic];
   } else {

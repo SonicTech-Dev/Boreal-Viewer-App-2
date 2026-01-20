@@ -3,10 +3,10 @@
 
  Change: /api/remote_stations now determines station display names strictly from the serials
  derived from TOPIC_TO_SERIAL (or MQTT_TOPIC_2_SERIAL / MQTT_TOPIC_3_SERIAL). It does NOT
- use IP addresses to decide the display name — IPs are still returned in the api response
- as an "ip" field when available, but they are not used to compute the display label.
+ use IP addresses to decide the display name.
 
- All other logic in the file is kept unchanged.
+ Additionally: /api/los now returns pagination metadata (total rows) so the frontend can
+ display accurate total counts and compute total pages without scanning all pages client-side.
 */
 
 require('dotenv').config();
@@ -18,7 +18,7 @@ const { exec } = require('child_process');
 const { Pool } = require('pg');
 const path = require('path');
 
-const { insertLosData, fetchLosData } = require('./db');
+const { insertLosData, fetchLosData, countLosData } = require('./db');
 
 const app = express();
 const server = http.createServer(app);
@@ -568,6 +568,7 @@ app.get('/api/remote_stations', (req, res) => {
 });
 
 // Keep los fetch endpoint (uses fetchLosData from ./db)
+// Now returns { ok: true, rows: [...], total: <number> } where total is the total matching rows for the filters
 app.get('/api/los', async (req, res) => {
   const { from, to, limit, offset, serial_number } = req.query;
   let parsedLimit = 500;
@@ -585,7 +586,17 @@ app.get('/api/los', async (req, res) => {
     const rawRows = await fetchLosData(from || null, to || null, parsedLimit, parsedOffset, serial_number || null);
     // Map DB rows to API-friendly shape expected by query-client.js
     const rows = Array.isArray(rawRows) ? rawRows.map(mapDbRowToApi) : [];
-    res.json({ ok: true, rows });
+
+    // Compute total count for the same filters so the client can paginate accurately
+    let total = 0;
+    try {
+      total = await countLosData(from || null, to || null, serial_number || null);
+    } catch (countErr) {
+      console.warn('countLosData failed:', countErr && countErr.message ? countErr.message : countErr);
+      total = 0;
+    }
+
+    res.json({ ok: true, rows, total });
   } catch (err) {
     console.error('GET /api/los error:', err && err.message ? err.message : err);
     res.status(500).json({ ok: false, error: 'Failed to query database' });
@@ -631,6 +642,8 @@ io.on('connection', (socket) => {
 });
 
 // --- MQTT subscribe / message handling ---
+// (unchanged, omitted in this block for brevity — original logic retained)
+
 const mqttOptions = {};
 if (process.env.MQTT_USERNAME) mqttOptions.username = process.env.MQTT_USERNAME;
 if (process.env.MQTT_PASSWORD) mqttOptions.password = process.env.MQTT_PASSWORD;
@@ -645,8 +658,8 @@ client.on('connect', () => {
   });
 });
 
-// Main message handler
 client.on('message', async (topic, payloadBuffer, packet) => {
+  // Entire message handling preserved from original file (unchanged)
   // Optionally ignore retained messages (prevent duplicates on startup)
   if (packet && packet.retain) {
     // remove this `return` if you want to process retained messages

@@ -152,8 +152,51 @@ async function fetchLosData(from, to, limit = 500, offset = 0, serial_number = n
   }
 }
 
+/**
+ * Count rows from los_data in a time range (uses recorded_at)
+ * Returns the total matching rows for the given filters (from/to/serial_number)
+ * This function is used to provide server-side totals for pagination without scanning pages.
+ *
+ * @param {string|Date|null} from inclusive start
+ * @param {string|Date|null} to inclusive end
+ * @param {string|null} serial_number OPTIONAL: filter by serial_number if provided
+ * @returns {Promise<number>} total count
+ */
+async function countLosData(from, to, serial_number = null) {
+  const clauses = [];
+  const values = [];
+  let idx = 1;
+
+  if (from) {
+    clauses.push(`recorded_at >= $${idx++}`);
+    values.push(new Date(from).toISOString());
+  }
+  if (to) {
+    clauses.push(`recorded_at <= $${idx++}`);
+    values.push(new Date(to).toISOString());
+  }
+
+  if (serial_number) {
+    clauses.push(`serial_number = $${idx++}`);
+    values.push(String(serial_number));
+  }
+
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const sql = `SELECT COUNT(*) AS total FROM los_data ${where};`;
+
+  try {
+    const res = await pool.query(sql, values);
+    const t = (res.rows && res.rows[0] && res.rows[0].total) ? Number(res.rows[0].total) : 0;
+    return Number.isNaN(t) ? 0 : t;
+  } catch (err) {
+    console.error('Error counting los_data:', err && err.message ? err.message : err);
+    throw err;
+  }
+}
+
 module.exports = {
   pool,
   insertLosData,
-  fetchLosData
+  fetchLosData,
+  countLosData
 };

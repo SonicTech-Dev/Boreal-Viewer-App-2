@@ -1,4 +1,3 @@
-// V4 — Copilot workbench rewrite
 // query-client.js — full-featured query UI: presets, fetch, clear, CSV export.
 // Pagination: pageSize 2000 with Prev/Next/First/Last. Controls shown only after results.
 // Uses recorded_at_str if provided by server, otherwise falls back to recorded_at.
@@ -13,8 +12,17 @@
 // Integrates chartjs-plugin-zoom for interactive mouse/gesture zoom & pan.
 //
 // CHANGES: Injects PDF, Clear and RESET buttons (PDF uses Graph Title for filename & PDF header).
+// CHANGES: Export CSV button now shows a tiny dropdown with two choices:
+//   - Current Page  (exports current page / cached pages per existing logic)
+//   - All Pages     (fetches ALL pages from server and exports combined CSV)
+// Both options use the Graph Title input (if provided) to name the downloaded file.
+//
+// PERFORMANCE: "All Pages" export fetches pages in parallel batches (configurable concurrency)
+// to reduce the time-to-download. A visual progress indicator (spinner of dots + percent)
+// is shown next to the CSV button and the actual CSV download starts once progress reaches 100%.
 
 (function () {
+  // DOM elements
   const fetchBtn = document.getElementById('fetch');
   const graphBtn = document.getElementById('graph');
   const fromInput = document.getElementById('from');
@@ -37,8 +45,8 @@
   // custom pan state holder so we can attach/detach once per canvas
   let __customPanAttached = false;
 
-  // --- 24-hour preview helpers (polished look) ---
-  function pad2(v) { return String(v).padStart(2, '0'); }
+  // --- Utilities for datetime formatting ---
+  function pad2(v) { return String(v).padStart(2,'0'); }
 
   function formatDateTo24Short(d) {
     if (!(d instanceof Date) || isNaN(d.getTime())) return '';
@@ -50,68 +58,6 @@
     return `${day}/${month}/${year} ${hours}:${minutes}`;
   }
 
-  function formatInputValueTo24(val) {
-    if (!val) return '';
-    // datetime-local string is local; constructing Date(val) treats it as local in most browsers
-    const d = new Date(val);
-    if (isNaN(d.getTime())) return '';
-    return formatDateTo24Short(d);
-  }
-
-  // NOTE: visual 24-hour previews have been removed as requested.
-  // The functions below are retained as no-ops to avoid changing any functional behavior.
-  (function injectPreviewStyles() {
-    // intentionally left blank to remove preview visual boxes
-    return;
-  })();
-
-  function create24Preview(inputEl) {
-    // intentionally a noop — previews removed
-    return () => {};
-  }
-
-  // Create previews and keep updater functions (noop)
-  const updateFromPreview = create24Preview(fromInput);
-  const updateToPreview = create24Preview(toInput);
-
-  // Ensure previews update on user interactions that change inputs (noop handlers)
-  if (fromInput) {
-    fromInput.addEventListener('input', () => {
-      try { updateFromPreview(); } catch (e) { /* ignore */ }
-    });
-    fromInput.addEventListener('change', () => {
-      try { updateFromPreview(); } catch (e) { /* ignore */ }
-    });
-  }
-  if (toInput) {
-    toInput.addEventListener('input', () => {
-      try { updateToPreview(); } catch (e) { /* ignore */ }
-    });
-    toInput.addEventListener('change', () => {
-      try { updateToPreview(); } catch (e) { /* ignore */ }
-    });
-  }
-
-  // Update previews when presets, init defaults, or fetch actions modify values
-  function safeUpdatePreviews() {
-    try { updateFromPreview(); } catch (e) { /* ignore */ }
-    try { updateToPreview(); } catch (e) { /* ignore */ }
-  }
-
-  // Pagination UI will be injected dynamically below the results
-  let pagingControlsEl = null;
-
-  // State
-  const pageSize = 2000;      // rows per page shown in UI
-  let currentPage = 0;        // zero-based page index
-  const pageCache = new Map(); // pageIndex -> rows[]
-  let lastFetchedCountForPage = new Map(); // pageIndex -> rows.length
-  let lastRequestParamsHash = ''; // used to detect param change and clear cache
-
-  // Total-scan control: avoid concurrent total scans for different queries
-  let totalScanInProgressForHash = null;
-
-  // Helper: format date for datetime-local input
   function isoLocalString(d) {
     const pad = (n) => String(n).padStart(2,'0');
     const yyyy = d.getFullYear();
@@ -122,9 +68,6 @@
     return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
   }
 
-  // -------------------------
-  // Parsing & Local Formatting
-  // -------------------------
   function parseToDate(val) {
     if (val === null || val === undefined || val === '') return null;
     if (val instanceof Date && !isNaN(val.getTime())) return val;
@@ -168,17 +111,37 @@
     try { return String(val); } catch (e) { return ''; }
   }
 
-  // Init defaults: populate inputs with last 1 hour and update previews
-  (function initDefaults() {
-    const now = new Date();
-    const from = new Date(now.getTime() - 3600 * 1000);
-    if (fromInput) fromInput.value = isoLocalString(from);
-    if (toInput) toInput.value = isoLocalString(now);
-    safeUpdatePreviews();
-  })();
+  // --- Minimal removed preview logic kept as noop (per prior requests) ---
+  (function injectPreviewStyles() { /* noop - previews intentionally removed */ })();
+  function create24Preview(inputEl) { return () => {}; }
+  const updateFromPreview = create24Preview(fromInput);
+  const updateToPreview = create24Preview(toInput);
+  function safeUpdatePreviews() { try { updateFromPreview(); } catch (e) {} try { updateToPreview(); } catch (e) {} }
 
-  // Inject paging controls UI (below the results element)
-  (function injectPagingControls() {
+  if (fromInput) {
+    fromInput.addEventListener('input', () => { try { updateFromPreview(); } catch(e){} });
+    fromInput.addEventListener('change', () => { try { updateFromPreview(); } catch(e){} });
+  }
+  if (toInput) {
+    toInput.addEventListener('input', () => { try { updateToPreview(); } catch(e){} });
+    toInput.addEventListener('change', () => { try { updateToPreview(); } catch(e){} });
+  }
+
+  // --- Pagination and query state ---
+  const pageSize = 2000;
+  let currentPage = 0;
+  const pageCache = new Map(); // pageIndex -> rows[]
+  let lastFetchedCountForPage = new Map();
+  let lastRequestParamsHash = '';
+
+  let serverTotalRows = null;
+  let serverTotalPages = null;
+
+  let totalScanInProgressForHash = null;
+
+  // --- UI injection: paging controls ---
+  let pagingControlsEl = null;
+  (function injectPagingControlsUI() {
     try {
       const panel = document.getElementById('query-panel');
       if (!panel || !resultsEl) return;
@@ -220,9 +183,35 @@
       lastBtn.id = 'page-last';
       lastBtn.disabled = true;
 
+      // Page jump input (1-based)
+      const pageJumpInput = document.createElement('input');
+      pageJumpInput.type = 'number';
+      pageJumpInput.id = 'page-jump';
+      pageJumpInput.min = '1';
+      pageJumpInput.style.width = '72px';
+      pageJumpInput.style.padding = '6px';
+      pageJumpInput.style.borderRadius = '6px';
+      pageJumpInput.style.border = '1px solid rgba(255,255,255,0.06)';
+      pageJumpInput.style.background = 'transparent';
+      pageJumpInput.style.color = 'inherit';
+      pageJumpInput.title = 'Type page number and press Enter or click Go';
+      pageJumpInput.placeholder = 'Go to page';
+
+      const pageGoBtn = document.createElement('button');
+      pageGoBtn.className = 'btn';
+      pageGoBtn.id = 'page-go';
+      pageGoBtn.textContent = 'Go';
+      pageGoBtn.style.padding = '6px 8px';
+      pageGoBtn.title = 'Jump to page';
+
       pagingControlsEl.appendChild(firstBtn);
       pagingControlsEl.appendChild(prevBtn);
       pagingControlsEl.appendChild(pageLabel);
+
+      // Insert jump controls after the label for convenience
+      pagingControlsEl.appendChild(pageJumpInput);
+      pagingControlsEl.appendChild(pageGoBtn);
+
       pagingControlsEl.appendChild(nextBtn);
       pagingControlsEl.appendChild(lastBtn);
 
@@ -230,6 +219,7 @@
       spacer.style.flex = '1';
       pagingControlsEl.appendChild(spacer);
 
+      // We'll append CSV and Clear buttons to the paging controls (CSV will be wrapped later)
       if (exportCsvBtn && exportCsvBtn.parentNode !== pagingControlsEl) {
         pagingControlsEl.appendChild(exportCsvBtn);
       }
@@ -261,6 +251,14 @@
       lastBtn.addEventListener('click', async () => {
         const params = getParamsForCurrentInputs();
         if (!params) return;
+
+        if (typeof serverTotalRows === 'number' && serverTotalRows >= 0) {
+          const lastPageIndex = Math.max(0, Math.ceil(serverTotalRows / pageSize) - 1);
+          currentPage = lastPageIndex;
+          loadAndRenderPage(currentPage);
+          return;
+        }
+
         if (!pageCache.has(0)) {
           const firstRows = await fetchPageRows(0, params.fromISO, params.toISO);
           if (firstRows === null) return;
@@ -334,13 +332,35 @@
         loadAndRenderPage(currentPage);
       });
 
+      // Jump handlers
+      function parseAndJump() {
+        try {
+          const v = parseInt(pageJumpInput.value, 10);
+          if (Number.isNaN(v)) return;
+          let targetPage = Math.max(0, v - 1);
+          if (typeof serverTotalPages === 'number' && serverTotalPages > 0) {
+            targetPage = Math.min(targetPage, Math.max(0, serverTotalPages - 1));
+          }
+          currentPage = targetPage;
+          loadAndRenderPage(currentPage);
+        } catch (e) {}
+      }
+
+      pageJumpInput.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          parseAndJump();
+        }
+      });
+      pageGoBtn.addEventListener('click', () => { parseAndJump(); });
+
       hidePagingControls();
     } catch (e) {
       console.error('injectPagingControls error', e);
     }
   })();
 
-  // Preset buttons (Last 1h, 6h, 12h, 24h, etc.)
+  // --- Presets ---
   if (presets && presets.forEach) {
     presets.forEach(btn => {
       btn.addEventListener('click', () => {
@@ -363,7 +383,7 @@
     });
   }
 
-  // Fetch button: start a new query, clear cache and load first page
+  // --- Fetch / Graph / Clear handlers ---
   if (fetchBtn) {
     fetchBtn.addEventListener('click', () => {
       const params = getParamsForCurrentInputs();
@@ -375,12 +395,10 @@
     });
   }
 
-  // Graph button: fetch data (paged) and render PPM vs Time chart
   if (graphBtn) {
     graphBtn.addEventListener('click', async () => {
       const params = getParamsForCurrentInputs();
       if (!params) return;
-      // Keep table state as-is; chart is an additional view
       try {
         graphBtn.disabled = true;
         chartMeta.textContent = 'Loading…';
@@ -391,13 +409,14 @@
     });
   }
 
-  // Clear button
   if (clearResultsBtn) {
     clearResultsBtn.addEventListener('click', () => {
       pageCache.clear();
       lastFetchedCountForPage.clear();
       lastRequestParamsHash = '';
       currentPage = 0;
+      serverTotalRows = null;
+      serverTotalPages = null;
       if (resultsEl) {
         resultsEl.innerHTML = '';
         if (resultsEmpty) resultsEl.appendChild(resultsEmpty);
@@ -405,55 +424,147 @@
       hidePagingControls();
       updatePageLabel();
       setPagingButtonsState();
-      try { window.rowtotal = 0; } catch (e) { /* ignore */ }
+      try { window.rowtotal = 0; } catch (e) {}
       totalScanInProgressForHash = null;
 
-      // hide chart if visible and destroy chart
       if (chartArea) {
         chartArea.style.display = 'none';
         chartArea.setAttribute('aria-hidden', 'true');
       }
       if (ppmChart) {
-        try { ppmChart.destroy(); } catch (e) { /* ignore */ }
+        try { ppmChart.destroy(); } catch (e) {}
         ppmChart = null;
       }
     });
   }
 
-  // Export CSV
-  if (exportCsvBtn) {
-    exportCsvBtn.addEventListener('click', () => {
-      let rowsToExport = [];
-      if (pageCache.size > 1) {
-        const pages = Array.from(pageCache.keys()).sort((a,b) => a - b);
-        for (const p of pages) rowsToExport = rowsToExport.concat(pageCache.get(p) || []);
-      } else if (pageCache.size === 1) {
-        const rows = pageCache.get(currentPage) || pageCache.values().next().value || [];
-        rowsToExport = rows.slice();
-      } else {
-        alert('No data to export. Fetch a page first.');
-        return;
-      }
+  // --- CSV: split button with menu that opens upwards and progress next to CSV button ---
+  (function enhanceCsvButton() {
+    if (!exportCsvBtn) return;
 
-      if (!rowsToExport || rowsToExport.length === 0) {
+    // wrapper for CSV button + menu + progress
+    const wrapper = document.createElement('div');
+    wrapper.style.position = 'relative';
+    wrapper.style.display = 'inline-flex';
+    wrapper.style.alignItems = 'center';
+    wrapper.style.gap = '6px';
+
+    const parent = exportCsvBtn.parentNode;
+    if (!parent) return;
+    parent.replaceChild(wrapper, exportCsvBtn);
+
+    exportCsvBtn.style.margin = '0';
+    exportCsvBtn.style.display = 'inline-flex';
+    exportCsvBtn.style.alignItems = 'center';
+    wrapper.appendChild(exportCsvBtn);
+
+    // menu that opens upward (we removed the extra caret button — the CSV button toggles the menu)
+    const menu = document.createElement('div');
+    menu.style.position = 'absolute';
+    menu.style.right = '0';
+    menu.style.bottom = 'calc(100% + 6px)';
+    menu.style.background = 'var(--card)';
+    menu.style.border = '1px solid rgba(255,255,255,0.04)';
+    menu.style.borderRadius = '6px';
+    menu.style.padding = '6px';
+    menu.style.boxShadow = '0 6px 16px rgba(0,0,0,0.5)';
+    menu.style.zIndex = '1200';
+    menu.style.display = 'none';
+    menu.style.minWidth = '160px';
+    wrapper.appendChild(menu);
+
+    const optCurrent = document.createElement('div');
+    optCurrent.textContent = 'Current Page';
+    optCurrent.style.padding = '8px';
+    optCurrent.style.cursor = 'pointer';
+    optCurrent.style.borderRadius = '4px';
+    optCurrent.addEventListener('mouseenter', () => optCurrent.style.background = 'rgba(255,255,255,0.02)');
+    optCurrent.addEventListener('mouseleave', () => optCurrent.style.background = 'transparent');
+
+    const optAll = document.createElement('div');
+    optAll.textContent = 'All Pages';
+    optAll.style.padding = '8px';
+    optAll.style.cursor = 'pointer';
+    optAll.style.borderRadius = '4px';
+    optAll.addEventListener('mouseenter', () => optAll.style.background = 'rgba(255,255,255,0.02)');
+    optAll.addEventListener('mouseleave', () => optAll.style.background = 'transparent');
+
+    menu.appendChild(optCurrent);
+    menu.appendChild(optAll);
+
+    function closeMenu() {
+      menu.style.display = 'none';
+      document.removeEventListener('click', onDocClick);
+    }
+    function openMenu() {
+      menu.style.display = 'block';
+      // attach doc click listener on next tick to avoid immediate close
+      setTimeout(() => { document.addEventListener('click', onDocClick); }, 0);
+    }
+    function onDocClick(e) { if (!wrapper.contains(e.target)) closeMenu(); }
+
+    // clicking the CSV button toggles menu
+    exportCsvBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (menu.style.display === 'none') openMenu(); else closeMenu(); });
+
+    // progress UI next to CSV button (in wrapper)
+    (function injectSpinnerStyles() {
+      if (document.getElementById('__csv_spinner_styles__')) return;
+      const s = document.createElement('style');
+      s.id = '__csv_spinner_styles__';
+      s.textContent = `
+        .__csv_progress { display:inline-flex; align-items:center; gap:8px; color:var(--muted); font-weight:700; font-size:13px; margin-left:6px; }
+        .__dots_spinner { width:20px; height:20px; position:relative; display:inline-block; }
+        .__dots_spinner .dot { width:4px; height:4px; background:currentColor; border-radius:50%; position:absolute; left:50%; top:50%; margin:-2px; transform-origin: 0 -7px; }
+        .__dots_spinner { animation: __csv_spin 1s linear infinite; }
+        @keyframes __csv_spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      `;
+      document.head && document.head.appendChild(s);
+    })();
+
+    function createProgressUI() {
+      const container = document.createElement('div');
+      container.className = '__csv_progress';
+      const spinner = document.createElement('div');
+      spinner.className = '__dots_spinner';
+      for (let i = 0; i < 8; i++) {
+        const span = document.createElement('span');
+        span.className = 'dot';
+        span.style.transform = `rotate(${(i * 360) / 8}deg) translate(0, -7px)`;
+        spinner.appendChild(span);
+      }
+      const pct = document.createElement('div');
+      pct.className = '__csv_progress_pct';
+      pct.textContent = '0%';
+      container.appendChild(spinner);
+      container.appendChild(pct);
+      return { container, setPct: (n) => { pct.textContent = `${Math.max(0, Math.min(100, Math.round(n)))}%`; }, remove: () => { try { container.remove(); } catch (e) {} } };
+    }
+
+    function sanitizeFilename(name) { if (!name) return ''; return name.replace(/[\\\/:*?"<>|]+/g, '').trim().slice(0, 200); }
+    function buildCsvFilename(defaultBase) {
+      const titleInputEl = document.getElementById('graph-title');
+      const titleRaw = (titleInputEl && titleInputEl.value) ? String(titleInputEl.value).trim() : '';
+      const safe = sanitizeFilename(titleRaw);
+      if (safe) return `${safe}.csv`;
+      return `${defaultBase}.csv`;
+    }
+
+    function exportRowsToCsv(rows, filename) {
+      if (!rows || rows.length === 0) {
         alert('No data to export');
         return;
       }
-
-      // CSV headers changed to match visible table labels
       const headers = ['Recorded_At','Temp','Rx_Light','R2','HeartBeat','PPM-M-LO'];
       const lines = [headers.join(',')];
-      rowsToExport.forEach(r => {
+      rows.forEach(r => {
         const vals = [
-          `"${r.recorded_at_str || r.recorded_at || ''}"`,
+          `"${(r.recorded_at_str || r.recorded_at || '').toString().replace(/"/g, '""')}"`,
           r.los_temp ?? '',
           r.los_rx_light ?? '',
           r.los_r2 ?? '',
           r.los_heartbeat ?? '',
           r.los_ppm ?? ''
         ];
-        // Escape any commas/newlines in fields by wrapping quoted fields as above for recorded_at
-        // Other numeric fields are left as-is (or empty).
         lines.push(vals.join(','));
       });
       const csv = lines.join('\n');
@@ -461,15 +572,163 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `los_query_${Date.now()}.csv`;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-    });
-  }
+    }
 
-  // Load and render a specific page (uses cache if available)
+    // Current Page export (unchanged behavior)
+    async function handleExportCurrent() {
+      try {
+        let rowsToExport = [];
+        if (pageCache.size > 1) {
+          const pages = Array.from(pageCache.keys()).sort((a,b) => a - b);
+          for (const p of pages) rowsToExport = rowsToExport.concat(pageCache.get(p) || []);
+        } else if (pageCache.size === 1) {
+          const rows = pageCache.get(currentPage) || pageCache.values().next().value || [];
+          rowsToExport = rows.slice();
+        } else {
+          alert('No data to export. Fetch a page first.');
+          return;
+        }
+        if (!rowsToExport || rowsToExport.length === 0) { alert('No data to export'); return; }
+        const filename = buildCsvFilename(`los_query_${Date.now()}`);
+        exportRowsToCsv(rowsToExport, filename);
+      } finally {
+        closeMenu();
+      }
+    }
+
+    // All Pages export (parallelized, progress shown next to CSV button in wrapper)
+    async function handleExportAll() {
+      let progressUI = null;
+      function showProgressUI() {
+        try {
+          if (wrapper.querySelector('.__csv_progress')) {
+            progressUI = { container: wrapper.querySelector('.__csv_progress'), setPct: (n) => { wrapper.querySelector('.__csv_progress_pct').textContent = `${Math.max(0, Math.min(100, Math.round(n)))}%`; }, remove: () => {} };
+          } else {
+            const ui = createProgressUI();
+            wrapper.appendChild(ui.container);
+            progressUI = ui;
+          }
+        } catch (e) { console.warn('showProgressUI failed', e); }
+      }
+      function hideProgressUI() { try { if (progressUI && typeof progressUI.remove === 'function') progressUI.remove(); progressUI = null; } catch (e) {} }
+
+      try {
+        const params = getParamsForCurrentInputs();
+        if (!params) return;
+
+        // Try to read server total
+        let totalRows = (typeof serverTotalRows === 'number' && serverTotalRows >= 0) ? serverTotalRows : null;
+        if (totalRows === null) {
+          const p0 = await fetchPageRows(0, params.fromISO, params.toISO);
+          if (p0 === null) { alert('Failed to fetch data from server for export'); return; }
+          if (typeof serverTotalRows === 'number') totalRows = serverTotalRows;
+        }
+
+        const rowsAccum = [];
+        if (totalRows !== null) {
+          const pagesCount = Math.max(0, Math.ceil(totalRows / pageSize));
+          if (pagesCount === 0) { alert('No data to export'); return; }
+
+          const concurrency = 8; // adjust if server overloaded
+          let nextPageIndex = 0;
+          let collected = 0;
+          const pageResults = new Array(pagesCount);
+
+          showProgressUI();
+          if (progressUI) progressUI.setPct(0);
+
+          async function worker() {
+            while (true) {
+              const p = nextPageIndex++;
+              if (p >= pagesCount) break;
+              try {
+                let rows;
+                if (pageCache.has(p)) rows = pageCache.get(p) || [];
+                else rows = await fetchPageRows(p, params.fromISO, params.toISO);
+                if (rows === null) throw new Error(`Failed fetching page ${p}`);
+                pageResults[p] = rows;
+                collected += rows.length;
+                if (progressUI) { const pct = Math.round((collected / totalRows) * 100); progressUI.setPct(Math.min(100, pct)); }
+              } catch (err) { throw err; }
+            }
+          }
+
+          const workers = [];
+          const wc = Math.min(concurrency, pagesCount);
+          for (let i = 0; i < wc; i++) workers.push(worker());
+
+          try {
+            await Promise.all(workers);
+          } catch (err) {
+            console.error('Parallel export error', err);
+            alert('Error fetching data from server during export');
+            hideProgressUI();
+            return;
+          }
+
+          if (progressUI) progressUI.setPct(100);
+          await new Promise(r => setTimeout(r, 240));
+
+          for (let p = 0; p < pagesCount; p++) {
+            const pr = pageResults[p] || [];
+            rowsAccum.push(...pr);
+          }
+
+        } else {
+          // Unknown total: sequential with soft cap and progress approximation
+          showProgressUI();
+          let collected = 0;
+          const SOFT_CAP_PAGES = 2000;
+          const MAX_PAGES_TO_FETCH = 10000;
+          for (let p = 0; p < MAX_PAGES_TO_FETCH && p < SOFT_CAP_PAGES; p++) {
+            if (pageCache.has(p)) {
+              const cached = pageCache.get(p) || [];
+              if (cached.length === 0) break;
+              rowsAccum.push(...cached);
+              collected += cached.length;
+              if (progressUI) { const approx = Math.min(99, Math.round(((p + 1) / SOFT_CAP_PAGES) * 100)); progressUI.setPct(approx); }
+              if (cached.length < pageSize) break;
+              continue;
+            }
+            const rows = await fetchPageRows(p, params.fromISO, params.toISO);
+            if (rows === null) { alert('Error fetching data from server during export'); hideProgressUI(); return; }
+            if (!rows || rows.length === 0) break;
+            rowsAccum.push(...rows);
+            collected += rows.length;
+            if (progressUI) { const approx = Math.min(99, Math.round(((p + 1) / SOFT_CAP_PAGES) * 100)); progressUI.setPct(approx); }
+            if (rows.length < pageSize) break;
+          }
+          if (progressUI) progressUI.setPct(100);
+          await new Promise(r => setTimeout(r, 240));
+        }
+
+        if (!rowsAccum || rowsAccum.length === 0) {
+          alert('No data to export');
+          hideProgressUI();
+          return;
+        }
+
+        const filename = buildCsvFilename(`los_query_full_${Date.now()}`);
+        exportRowsToCsv(rowsAccum, filename);
+
+      } finally {
+        setTimeout(() => { try { if (chartMeta) chartMeta.textContent = '—'; } catch (e) {} }, 1500);
+        closeMenu();
+        hideProgressUI();
+      }
+    }
+
+    optCurrent.addEventListener('click', (e) => { e.stopPropagation(); handleExportCurrent(); });
+    optAll.addEventListener('click', (e) => { e.stopPropagation(); handleExportAll(); });
+
+  })(); // end enhanceCsvButton
+
+  // --- Page loading / rendering functions ---
   async function loadAndRenderPage(pageIndex) {
     const params = getParamsForCurrentInputs();
     if (!params) return;
@@ -509,7 +768,6 @@
     startTotalScanForParamsIfNeeded(params);
   }
 
-  // Performs the actual fetch for a page index. Returns rows[] or null on error.
   async function fetchPageRows(pageIndex, fromISO, toISO) {
     try {
       const params = new URLSearchParams();
@@ -518,32 +776,33 @@
       params.set('limit', String(pageSize));
       params.set('offset', String(pageIndex * pageSize));
 
-      // Include currently selected station serial_number if available so server returns station-scoped rows
       try {
         const stationSelect = document.getElementById('station-select');
         const selSerial = stationSelect && stationSelect.selectedOptions && stationSelect.selectedOptions[0]
           ? stationSelect.selectedOptions[0].dataset.serial
           : null;
         if (selSerial) params.set('serial_number', selSerial);
-      } catch (e) {
-        // ignore if select not present
-      }
+      } catch (e) {}
 
       const r = await fetch('/api/los?' + params.toString());
       if (!r.ok) throw new Error('Server returned ' + r.status);
       const data = await r.json();
       if (!data.ok) throw new Error('Query failed');
+
+      if (typeof data.total === 'number') {
+        serverTotalRows = Number(data.total);
+        serverTotalPages = Math.max(0, Math.ceil(serverTotalRows / pageSize));
+        try { window.rowtotal = serverTotalRows; } catch (e) {}
+        pokeResultsForRowTotal();
+      }
+
       const rows = data.rows || [];
 
-      // guard against server ignoring offset: if identical to previous page, treat as empty
       if (pageIndex > 0 && pageCache.has(pageIndex - 1)) {
         const prev = pageCache.get(pageIndex - 1) || [];
         if (rows.length === prev.length && rows.length > 0) {
           const same = (rows[0].id === prev[0].id && rows[rows.length-1].id === prev[prev.length-1].id);
-          if (same) {
-            lastFetchedCountForPage.set(pageIndex, 0);
-            return [];
-          }
+          if (same) { lastFetchedCountForPage.set(pageIndex, 0); return []; }
         }
       }
       return rows;
@@ -553,15 +812,11 @@
     }
   }
 
-  // Returns param object or null if invalid
   function getParamsForCurrentInputs() {
     const from = (fromInput && fromInput.value) ? new Date(fromInput.value).toISOString() : undefined;
     const to = (toInput && toInput.value) ? new Date(toInput.value).toISOString() : undefined;
 
-    if (from && to && new Date(from) > new Date(to)) {
-      alert('From must be before To');
-      return null;
-    }
+    if (from && to && new Date(from) > new Date(to)) { alert('From must be before To'); return null; }
     const hash = `f=${from||''}&t=${to||''}&ps=${pageSize}`;
     return { fromISO: from, toISO: to, hash };
   }
@@ -571,10 +826,12 @@
     lastFetchedCountForPage.clear();
     lastRequestParamsHash = newHash || '';
     currentPage = 0;
+    serverTotalRows = null;
+    serverTotalPages = null;
     hidePagingControls();
     updatePageLabel();
     setPagingButtonsState();
-    try { window.rowtotal = 0; } catch (e) { /* ignore */ }
+    try { window.rowtotal = 0; } catch (e) {}
     totalScanInProgressForHash = null;
   }
 
@@ -583,7 +840,18 @@
     if (!label) return;
     const fetchedCount = lastFetchedCountForPage.get(currentPage);
     const isLastKnown = typeof fetchedCount === 'number' && fetchedCount < pageSize;
-    label.textContent = `Page ${currentPage + 1}${isLastKnown ? ' (end)' : ''}`;
+    if (typeof serverTotalRows === 'number' && serverTotalRows >= 0) {
+      const totalPages = serverTotalPages || 0;
+      label.textContent = `Page ${currentPage + 1} of ${totalPages || 1}`;
+    } else {
+      label.textContent = `Page ${currentPage + 1}${isLastKnown ? ' (end)' : ''}`;
+    }
+
+    // Keep jump input in sync
+    const jump = document.getElementById('page-jump');
+    if (jump) {
+      try { jump.value = String(currentPage + 1); } catch (e) {}
+    }
   }
 
   function setPagingButtonsState() {
@@ -595,26 +863,25 @@
     prevBtn.disabled = currentPage <= 0;
     if (firstBtn) firstBtn.disabled = currentPage <= 0;
 
-    const curCount = lastFetchedCountForPage.get(currentPage);
-    if (typeof curCount === 'number' && curCount < pageSize) {
-      nextBtn.disabled = true;
-      if (lastBtn) lastBtn.disabled = true;
+    if (typeof serverTotalPages === 'number' && serverTotalPages >= 0) {
+      const lastIndex = Math.max(0, serverTotalPages - 1);
+      nextBtn.disabled = currentPage >= lastIndex;
+      if (lastBtn) lastBtn.disabled = currentPage >= lastIndex;
     } else {
-      nextBtn.disabled = false;
-      if (lastBtn) lastBtn.disabled = false;
+      const curCount = lastFetchedCountForPage.get(currentPage);
+      if (typeof curCount === 'number' && curCount < pageSize) {
+        nextBtn.disabled = true;
+        if (lastBtn) lastBtn.disabled = true;
+      } else {
+        nextBtn.disabled = false;
+        if (lastBtn) lastBtn.disabled = false;
+      }
     }
   }
 
-  function hidePagingControls() {
-    if (!pagingControlsEl) return;
-    try { pagingControlsEl.style.display = 'none'; } catch (e) { /* ignore */ }
-  }
-  function showPagingControls() {
-    if (!pagingControlsEl) return;
-    try { pagingControlsEl.style.display = 'flex'; } catch (e) { /* ignore */ }
-  }
+  function hidePagingControls() { if (!pagingControlsEl) return; try { pagingControlsEl.style.display = 'none'; } catch (e) {} }
+  function showPagingControls() { if (!pagingControlsEl) return; try { pagingControlsEl.style.display = 'flex'; } catch (e) {} }
 
-  // Render results table for a set of rows
   function renderResultsTable(rows) {
     if (!resultsEl) return;
     resultsEl.innerHTML = '';
@@ -666,8 +933,16 @@
 
   function startTotalScanForParamsIfNeeded(params) {
     if (!params || !params.hash) return;
+
     if (totalScanInProgressForHash === params.hash) return;
     totalScanInProgressForHash = params.hash;
+
+    if (typeof serverTotalRows === 'number' && serverTotalRows >= 0) {
+      try { window.rowtotal = Number(serverTotalRows) || 0; } catch (e) {}
+      pokeResultsForRowTotal();
+      totalScanInProgressForHash = null;
+      return;
+    }
 
     try {
       let interim = 0;
@@ -679,17 +954,17 @@
       window.rowtotal = Number(interim) || 0;
       pokeResultsForRowTotal();
     } catch (e) {
-      try { window.rowtotal = 0; } catch (e2) { /* ignore */ }
+      try { window.rowtotal = 0; } catch (e2) {}
     }
 
     (async () => {
       try {
         const total = await computeTotalRowsForQuery(params);
-        try { window.rowtotal = Number(total) || 0; } catch (e) { /* ignore */ }
+        try { window.rowtotal = Number(total) || 0; } catch (e) {}
         pokeResultsForRowTotal();
       } catch (e) {
         console.error('computeTotalRowsForQuery error', e);
-        try { window.rowtotal = 0; } catch (e2) { /* ignore */ }
+        try { window.rowtotal = 0; } catch (e2) {}
         pokeResultsForRowTotal();
       } finally {
         if (totalScanInProgressForHash === params.hash) totalScanInProgressForHash = null;
@@ -736,21 +1011,16 @@
       const id = '__rowtotal_marker__';
       const prev = document.getElementById(id);
       if (prev && prev.parentNode) prev.parentNode.removeChild(prev);
-
       const marker = document.createElement('div');
       marker.id = id;
       marker.style.display = 'none';
       resultsEl.appendChild(marker);
-      setTimeout(() => {
-        try {
-          if (marker.parentNode) marker.parentNode.removeChild(marker);
-        } catch (e) { /* ignore */ }
-      }, 0);
-    } catch (e) { /* ignore */ }
+      setTimeout(() => { try { if (marker.parentNode) marker.parentNode.removeChild(marker); } catch (e) {} }, 0);
+    } catch (e) {}
   }
 
-  // --- Chart control injection and helpers ---
-  // helper to create a higher-resolution dataURL from canvas
+  // --- Chart controls, graphing, PDF export, pan helpers (full implementation) ---
+
   function canvasToDataURLHighRes(srcCanvas, scale = 2) {
     try {
       const w = srcCanvas.width;
@@ -781,21 +1051,18 @@
       controls.style.gap = '8px';
       controls.style.alignItems = 'center';
 
-      // PDF button (true PDF using jsPDF)
       const pdfBtn = document.createElement('button');
       pdfBtn.className = 'btn';
       pdfBtn.id = 'chart-pdf';
       pdfBtn.textContent = 'PDF';
       pdfBtn.title = 'Download chart as PDF';
 
-      // Clear button (clears table/cache and chart — same behavior as Clear Table)
       const chartClearBtn = document.createElement('button');
       chartClearBtn.className = 'btn secondary';
       chartClearBtn.id = 'chart-clear';
       chartClearBtn.textContent = 'Clear';
       chartClearBtn.title = 'Clear chart and query results';
 
-      // Reset button (keeps interactive plugin controls)
       const resetBtn = document.createElement('button');
       resetBtn.className = 'btn secondary';
       resetBtn.id = 'chart-reset';
@@ -806,27 +1073,20 @@
       controls.appendChild(resetBtn);
       header.appendChild(controls);
 
-      // PDF handler: create real PDF using jsPDF if available
+      // PDF handler: uses jsPDF if available, fallback to open image
       pdfBtn.addEventListener('click', async () => {
-        if (!chartCanvas) {
-          alert('No chart available');
-          return;
-        }
+        if (!chartCanvas) { alert('No chart available'); return; }
         try {
-          // Use Graph Title input as filename and as PDF header
           const titleInputEl = document.getElementById('graph-title');
           const titleRaw = (titleInputEl && titleInputEl.value) ? String(titleInputEl.value).trim() : '';
           const safeName = titleRaw ? titleRaw.replace(/[\\\/:*?"<>|]+/g, '').slice(0, 100) : `ppm_chart_${Date.now()}`;
-
           const dataUrl = canvasToDataURLHighRes(chartCanvas, 2);
-          // Prefer the UMD jsPDF global (window.jspdf.jsPDF) or window.jsPDF
           let doc;
           if (window.jspdf && window.jspdf.jsPDF) {
             doc = new window.jspdf.jsPDF({ orientation: 'landscape' });
           } else if (window.jsPDF) {
             doc = new window.jsPDF({ orientation: 'landscape' });
           } else {
-            // fallback: open image in new tab for manual save
             const w = window.open('', '_blank');
             if (!w) { alert('Popup blocked — cannot open chart.'); return; }
             w.document.write('<html><body style="margin:0"><img src="' + dataUrl + '" style="width:100%"/></body></html>');
@@ -834,7 +1094,6 @@
             return;
           }
 
-          // load image to obtain natural size for aspect
           const imgProps = await new Promise((resolve) => {
             const img = new Image();
             img.onload = () => resolve({ width: img.width, height: img.height });
@@ -846,18 +1105,13 @@
           const pdfH = doc.internal.pageSize.getHeight();
           const margin = 8;
 
-          // If a title was provided, draw it centered at top in bold large font
           if (titleRaw) {
-            try {
-              doc.setFont('helvetica', 'bold');
-            } catch (e) { /* ignore */ }
+            try { doc.setFont('helvetica', 'bold'); } catch (e) {}
             doc.setFontSize(18);
             doc.setTextColor(20, 20, 20);
-            // center text
             doc.text(titleRaw, pdfW / 2, margin + 8, { align: 'center' });
           }
 
-          // compute space for image below title
           const titleOffset = titleRaw ? 18 : 0;
           const yStart = margin + titleOffset + 10;
           const maxW = pdfW - margin * 2;
@@ -877,43 +1131,30 @@
             if (!w) { alert('Popup blocked — cannot open chart.'); return; }
             w.document.write('<html><body style="margin:0"><img src="' + dataUrl + '" style="width:100%"/></body></html>');
             w.document.close();
-          } catch (e2) { /* ignore */ }
+          } catch (e2) {}
         }
       });
 
-      // Clear handler: perform same actions as Clear Table button
+      // Clear handler: same as clearResultsBtn
       chartClearBtn.addEventListener('click', () => {
         try {
-          // Clear caches and UI like the clear-results handler
           pageCache.clear();
           lastFetchedCountForPage.clear();
           lastRequestParamsHash = '';
           currentPage = 0;
-          if (resultsEl) {
-            resultsEl.innerHTML = '';
-            if (resultsEmpty) resultsEl.appendChild(resultsEmpty);
-          }
+          serverTotalRows = null;
+          serverTotalPages = null;
+          if (resultsEl) { resultsEl.innerHTML = ''; if (resultsEmpty) resultsEl.appendChild(resultsEmpty); }
           hidePagingControls();
           updatePageLabel();
           setPagingButtonsState();
-          try { window.rowtotal = 0; } catch (e) { /* ignore */ }
+          try { window.rowtotal = 0; } catch (e) {}
           totalScanInProgressForHash = null;
-
-          // hide chart area and destroy chart instance
-          if (chartArea) {
-            chartArea.style.display = 'none';
-            chartArea.setAttribute('aria-hidden', 'true');
-          }
-          if (ppmChart) {
-            try { ppmChart.destroy(); } catch (e) { /* ignore */ }
-            ppmChart = null;
-          }
-        } catch (e) {
-          console.error('chartClear error', e);
-        }
+          if (chartArea) { chartArea.style.display = 'none'; chartArea.setAttribute('aria-hidden', 'true'); }
+          if (ppmChart) { try { ppmChart.destroy(); } catch (e) {} ppmChart = null; }
+        } catch (e) { console.error('chartClear error', e); }
       });
 
-      // Reset handler: preference to plugin resetZoom, otherwise restore full view
       resetBtn.addEventListener('click', () => {
         if (!ppmChart) return;
         try {
@@ -922,7 +1163,7 @@
             setTimeout(() => { try { setFullView(ppmChart); } catch (e) {} }, 0);
             return;
           }
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
         setFullView(ppmChart);
       });
 
@@ -932,15 +1173,13 @@
     }
   }
 
-  // --- Graphing helpers ---
-
-  // Fetch all rows across pages (up to a max point limit) for graphing
+  // Graphing helpers and chart creation
   async function fetchAllRowsForGraph(fromISO, toISO, maxPoints = 5000) {
     const all = [];
     let page = 0;
     while (true) {
       const rows = await fetchPageRows(page, fromISO, toISO);
-      if (rows === null) return null; // error
+      if (rows === null) return null;
       if (!rows || rows.length === 0) break;
       all.push(...rows);
       if (all.length >= maxPoints) break;
@@ -950,64 +1189,39 @@
     return all.slice(0, maxPoints);
   }
 
-  // Render PPM chart for given params
   async function renderPpmGraphForParams(params) {
     if (!params) return;
     if (!chartArea || !chartCanvas) return;
 
-    // If chartjs-plugin-zoom is loaded, register it (it usually registers itself when loaded after Chart.js).
-    // This is defensive: attempt to register common plugin globals if available.
     try {
       if (window.Chart && window.chartjsPluginZoom && typeof window.Chart.register === 'function') {
-        // plugin may already register itself; calling register twice is harmless
-        try { window.Chart.register(window.chartjsPluginZoom); } catch (e) { /* ignore */ }
+        try { window.Chart.register(window.chartjsPluginZoom); } catch (e) {}
       }
-    } catch (e) { /* ignore */ }
+    } catch (e) {}
 
-    // ensure chart controls exist
     ensureChartControls();
 
-    // show chart area
     chartArea.style.display = 'block';
     chartArea.setAttribute('aria-hidden', 'false');
 
-    // fetch rows (paged)
     chartMeta.textContent = 'Fetching data…';
-    const rows = await fetchAllRowsForGraph(params.fromISO, params.toISO, 10000); // safety limit
-    if (rows === null) {
-      chartMeta.textContent = 'Error fetching data';
-      return;
-    }
-    if (rows.length === 0) {
-      chartMeta.textContent = 'No rows for selected range';
-      // create/clear chart
-      if (ppmChart) {
-        ppmChart.data.labels = [];
-        ppmChart.data.datasets[0].data = [];
-        ppmChart.update();
-      }
-      return;
-    }
+    const rows = await fetchAllRowsForGraph(params.fromISO, params.toISO, 10000);
+    if (rows === null) { chartMeta.textContent = 'Error fetching data'; return; }
+    if (rows.length === 0) { chartMeta.textContent = 'No rows for selected range'; if (ppmChart) { ppmChart.data.labels = []; ppmChart.data.datasets[0].data = []; ppmChart.update(); } return; }
 
-    // rows come in DESC order by recorded_at, make ascending
     rows.sort((a, b) => {
       const ta = parseToDate(a.recorded_at || a.recorded_at_raw || a.recorded_at_str) || new Date(0);
       const tb = parseToDate(b.recorded_at || b.recorded_at_raw || b.recorded_at_str) || new Date(0);
       return ta - tb;
     });
 
-    // Build labels and numeric data
     const labels = rows.map(r => toLocalDisplay(r.recorded_at || r.recorded_at_raw || r.recorded_at_str || ''));
     const dataPts = rows.map(r => (r.los_ppm === null || r.los_ppm === undefined) ? null : Number(r.los_ppm));
 
     chartMeta.textContent = `${rows.length.toLocaleString()} points`;
 
-    // Build Chart.js dataset and config
     try {
-      if (!window.Chart) {
-        chartMeta.textContent = 'Chart.js not available';
-        return;
-      }
+      if (!window.Chart) { chartMeta.textContent = 'Chart.js not available'; return; }
       const ctx = chartCanvas.getContext('2d');
 
       const dataset = {
@@ -1022,30 +1236,23 @@
         borderWidth: 1.5
       };
 
-      // Tooltip callbacks use closure 'rows' and 'labels' above to produce stable title and label text
       const tooltipConfig = {
         callbacks: {
           title: function (tooltipItems) {
-            // Return a single formatted timestamp line based on the underlying row data
             if (!tooltipItems || tooltipItems.length === 0) return '';
             const idx = tooltipItems[0].dataIndex;
             const r = rows[idx];
-            if (!r) {
-              // fallback to label array
-              return (labels[idx] || '') ;
-            }
+            if (!r) return (labels[idx] || '');
             const ts = r.recorded_at || r.recorded_at_raw || r.recorded_at_str || '';
             return toLocalDisplay(ts) || (labels[idx] || '');
           },
           label: function (context) {
-            // Prefer the original los_ppm value from the underlying row if available to avoid "[Object Object]" issues
             const idx = context.dataIndex;
             const r = rows && rows[idx] ? rows[idx] : null;
             let val = null;
             if (r && (r.los_ppm !== undefined && r.los_ppm !== null)) {
               val = r.los_ppm;
             } else {
-              // fallback: context.parsed may be a number or an object {x,y}
               if (context.parsed !== undefined && context.parsed !== null) {
                 if (typeof context.parsed === 'number') val = context.parsed;
                 else if (typeof context.parsed === 'object' && context.parsed.y !== undefined) val = context.parsed.y;
@@ -1060,19 +1267,9 @@
         }
       };
 
-      // Zoom plugin options (chartjs-plugin-zoom) — we keep zoom (wheel/pinch) enabled but disable plugin pan
       const zoomPluginOptions = {
-        // Enable wheel zoom and pinch zoom on x axis, and drag pan in x mode.
-        zoom: {
-          wheel: { enabled: true },
-          pinch: { enabled: true },
-          mode: 'x'
-        },
-        // disable built-in plugin pan because we implement a custom left-click drag pan (with inverted controls)
-        pan: {
-          enabled: false,
-          mode: 'xy'
-        }
+        zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' },
+        pan: { enabled: false, mode: 'xy' }
       };
 
       if (ppmChart) {
@@ -1081,72 +1278,33 @@
         if (ppmChart.options.plugins && ppmChart.options.plugins.tooltip) {
           ppmChart.options.plugins.tooltip.callbacks = tooltipConfig.callbacks;
         }
-        // ensure y-axis begins at zero and has correct label
         if (!ppmChart.options.scales) ppmChart.options.scales = {};
         if (!ppmChart.options.scales.y) ppmChart.options.scales.y = {};
         ppmChart.options.scales.y.title = { display: true, text: 'PPM-M-LO' };
         ppmChart.options.scales.y.beginAtZero = true;
-        // attach zoom options if plugin available
-        try {
-          ppmChart.options.plugins.zoom = zoomPluginOptions;
-        } catch (e) { /* ignore */ }
+        try { ppmChart.options.plugins.zoom = zoomPluginOptions; } catch (e) {}
         ppmChart.update();
-        // reset view window to show full range on new data
-        if (labels.length > 0) {
-          setTimeout(() => {
-            try {
-              if (ppmChart) {
-                // if plugin provides resetZoom, use it to clear any previous zoom
-                if (typeof ppmChart.resetZoom === 'function') ppmChart.resetZoom();
-                setFullView(ppmChart);
-              }
-            } catch (e) {}
-          }, 0);
-        }
+        if (labels.length > 0) { setTimeout(() => { try { if (ppmChart && typeof ppmChart.resetZoom === 'function') ppmChart.resetZoom(); setFullView(ppmChart); } catch (e) {} }, 0); }
       } else {
-        // create new chart
         ppmChart = new Chart(ctx, {
           type: 'line',
-          data: {
-            labels,
-            datasets: [dataset]
-          },
+          data: { labels, datasets: [dataset] },
           options: {
             responsive: true,
             maintainAspectRatio: false,
-            interaction: {
-              mode: 'index',
-              intersect: false
-            },
-            plugins: {
-              legend: { display: false },
-              tooltip: tooltipConfig,
-              // add zoom options (plugin will read these if registered)
-              zoom: zoomPluginOptions
-            },
+            interaction: { mode: 'index', intersect: false },
+            plugins: { legend: { display: false }, tooltip: tooltipConfig, zoom: zoomPluginOptions },
             scales: {
-              x: {
-                display: true,
-                title: { display: true, text: 'Time' },
-                ticks: { maxRotation: 45, autoSkip: true, maxTicksLimit: 20 }
-              },
-              y: {
-                display: true,
-                title: { display: true, text: 'PPM-M-LO' },
-                beginAtZero: true
-              }
+              x: { display: true, title: { display: true, text: 'Time' }, ticks: { maxRotation: 45, autoSkip: true, maxTicksLimit: 20 } },
+              y: { display: true, title: { display: true, text: 'PPM-M-LO' }, beginAtZero: true }
             }
           }
         });
 
-        // initialize view start/end fields
         ppmChart.__viewStart = 0;
         ppmChart.__viewEnd = (ppmChart.data.labels && ppmChart.data.labels.length) ? ppmChart.data.labels.length - 1 : 0;
-        // ensure controls and full view
         ensureChartControls();
         setFullView(ppmChart);
-
-        // attach custom left-click drag panning (inverted controls)
         attachCustomPanToCanvas(ppmChart, chartCanvas);
       }
     } catch (e) {
@@ -1155,7 +1313,6 @@
     }
   }
 
-  // helper to set full view for a chart
   function setFullView(chart) {
     if (!chart) return;
     const N = (chart.data && chart.data.labels) ? chart.data.labels.length : 0;
@@ -1169,8 +1326,6 @@
     try { chart.update('none'); } catch (e) { try { chart.update(); } catch (e2) {} }
   }
 
-  // CUSTOM PANNING: attach left-button drag handlers that pan the chart.
-  // Controls are inverted per requirement: drag-left pans to the right, drag-up pans down.
   function attachCustomPanToCanvas(chart, canvas) {
     if (!chart || !canvas || __customPanAttached) return;
     __customPanAttached = true;
@@ -1180,13 +1335,9 @@
     let startValue = { x: 0, y: 0 };
     let startRange = { xMin: 0, xMax: 0, yMin: 0, yMax: 0 };
 
-    function preventSelection(e) {
-      e.preventDefault && e.preventDefault();
-      return false;
-    }
+    function preventSelection(e) { e.preventDefault && e.preventDefault(); return false; }
 
     function onMouseDown(e) {
-      // left button only
       if (e.button !== 0) return;
       const rect = canvas.getBoundingClientRect();
       const canvasX = (e.clientX - rect.left);
@@ -1198,13 +1349,11 @@
 
       dragging = true;
       canvas.style.cursor = 'grabbing';
-      startPixel.x = canvasX;
-      startPixel.y = canvasY;
+      startPixel.x = canvasX; startPixel.y = canvasY;
       try {
         startValue.x = xScale.getValueForPixel(canvasX);
         startValue.y = yScale.getValueForPixel(canvasY);
       } catch (err) {
-        // fallback: estimate using left/top area
         startValue.x = xScale.getValueForPixel(canvasX);
         startValue.y = yScale.getValueForPixel(canvasY);
       }
@@ -1213,7 +1362,6 @@
       startRange.yMin = (typeof yScale.min === 'number') ? yScale.min : chart.options.scales.y.min || 0;
       startRange.yMax = (typeof yScale.max === 'number') ? yScale.max : chart.options.scales.y.max || (chart.data.datasets && chart.data.datasets[0] && chart.data.datasets[0].data ? Math.max(...chart.data.datasets[0].data.filter(v => v !== null)) : 0);
 
-      // prevent page selection while dragging
       document.addEventListener('selectstart', preventSelection);
       document.addEventListener('dragstart', preventSelection);
       window.addEventListener('mousemove', onMouseMove);
@@ -1233,7 +1381,6 @@
       const curValX = xScale.getValueForPixel(canvasX);
       const curValY = yScale.getValueForPixel(canvasY);
 
-      // value delta = cur - start. Inverted pan => shift by -delta
       const deltaX = (curValX - startValue.x);
       const deltaY = (curValY - startValue.y);
 
@@ -1242,17 +1389,13 @@
       const newYMin = startRange.yMin - deltaY;
       const newYMax = startRange.yMax - deltaY;
 
-      // Apply new ranges
       try {
         chart.options.scales.x.min = newXMin;
         chart.options.scales.x.max = newXMax;
         chart.options.scales.y.min = newYMin;
         chart.options.scales.y.max = newYMax;
-        // update quickly without animation
         chart.update('none');
-      } catch (err) {
-        // ignore errors (rare)
-      }
+      } catch (err) {}
     }
 
     function onMouseUp() {
@@ -1265,13 +1408,9 @@
       window.removeEventListener('mouseup', onMouseUp);
     }
 
-    // attach mousedown to canvas
     canvas.style.cursor = 'grab';
     canvas.addEventListener('mousedown', onMouseDown);
-    // clean up on window unload
-    window.addEventListener('beforeunload', () => {
-      try { canvas.removeEventListener('mousedown', onMouseDown); } catch (e) {}
-    });
+    window.addEventListener('beforeunload', () => { try { canvas.removeEventListener('mousedown', onMouseDown); } catch (e) {} });
   }
 
   // Expose for debugging in console if needed
@@ -1281,4 +1420,14 @@
     pageSize,
     currentPageRef: () => currentPage
   };
+
+  // Initialize default query (last hour)
+  (function init() {
+    const now = new Date();
+    const from = new Date(now.getTime() - 3600 * 1000);
+    if (fromInput) fromInput.value = isoLocalString(from);
+    if (toInput) toInput.value = isoLocalString(now);
+    safeUpdatePreviews();
+  })();
+
 })();

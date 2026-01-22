@@ -557,8 +557,11 @@
       const headers = ['Recorded_At','Temp','Rx_Light','R2','HeartBeat','PPM-M-LO'];
       const lines = [headers.join(',')];
       rows.forEach(r => {
+        // Use frontend helper to format recorded time into local timezone (simple, readable)
+        const recordedLocal = toLocalDisplay(r.recorded_at_str || r.recorded_at || '');
+        const timeField = `"${String(recordedLocal || '').replace(/"/g, '""')}"`;
         const vals = [
-          `"${(r.recorded_at_str || r.recorded_at || '').toString().replace(/"/g, '""')}"`,
+          timeField,
           r.los_temp ?? '',
           r.los_rx_light ?? '',
           r.los_r2 ?? '',

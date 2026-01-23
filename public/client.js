@@ -1,6 +1,6 @@
 // client.js — live UI: receives mqtt_message, updates real-time tiles with popup details and feed.
 // Fix: prefer server-provided los object (server-side merging) over client-side recompute.
-// Label change: renamed GasFinder-PPM -> PPM-M-LO
+// Label change: renamed GasFinder-PPM -> PPM
 //
 // NOTE: Popup hover removed — tiles now do nothing on hover.
 
@@ -41,8 +41,8 @@
     { keyVariants: ['LoS-Rx Light', 'LoS-RxLight', 'LoS Rx Light', 'losrxlight'], label: 'Rx Light', apiField: 'los_rx_light' },
     { keyVariants: ['LoS- R2', 'LoS-R2', 'LoS - R2', 'losr2'], label: 'R2', apiField: 'los_r2' },
     { keyVariants: ['LoS-HeartBeat', 'LoS- HeartBeat', 'losheartbeat'], label: 'HeartBeat', apiField: 'los_heartbeat' },
-    // Label updated to PPM-M-LO
-    { keyVariants: ['LoS - PPM', 'LoS- PPM', 'LoS-PPM', 'los_ppm', 'ppm', 'losppm'], label: 'PPM-M-LO', apiField: 'los_ppm' }
+    // Label updated to PPM
+    { keyVariants: ['LoS - PPM', 'LoS- PPM', 'LoS-PPM', 'los_ppm', 'ppm', 'losppm'], label: 'PPM', apiField: 'los_ppm' }
   ];
 
   // Latest values for tiles (values correspond to currently selected station)

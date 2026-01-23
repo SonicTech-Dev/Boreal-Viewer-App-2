@@ -554,7 +554,7 @@
         alert('No data to export');
         return;
       }
-      const headers = ['Recorded_At','Temp','Rx_Light','R2','HeartBeat','PPM-M-LO'];
+      const headers = ['Recorded_At','Temp','Rx_Light','R2','HeartBeat','PPM'];
       const lines = [headers.join(',')];
       rows.forEach(r => {
         // Use frontend helper to format recorded time into local timezone (simple, readable)
@@ -898,7 +898,7 @@
     table.className = 'table';
     const thead = document.createElement('thead');
     const headerRow = document.createElement('tr');
-    ['Recorded_At','Temp','Rx_Light','R2','HeartBeat','PPM-M-LO'].forEach(h => {
+    ['Recorded_At','Temp','Rx_Light','R2','HeartBeat','PPM'].forEach(h => {
       const th = document.createElement('th');
       th.textContent = h;
       headerRow.appendChild(th);
@@ -1228,7 +1228,7 @@
       const ctx = chartCanvas.getContext('2d');
 
       const dataset = {
-        label: 'PPM-M-LO',
+        label: 'PPM',
         data: dataPts,
         borderColor: 'rgba(96,165,250,1)',
         backgroundColor: 'rgba(96,165,250,0.08)',
@@ -1264,8 +1264,8 @@
                 val = context.raw;
               }
             }
-            if (val === null || val === undefined || val === '') return 'PPM-M-LO: n/a';
-            return `PPM-M-LO: ${val}`;
+            if (val === null || val === undefined || val === '') return 'PPM: n/a';
+            return `PPM: ${val}`;
           }
         }
       };
@@ -1283,7 +1283,7 @@
         }
         if (!ppmChart.options.scales) ppmChart.options.scales = {};
         if (!ppmChart.options.scales.y) ppmChart.options.scales.y = {};
-        ppmChart.options.scales.y.title = { display: true, text: 'PPM-M-LO' };
+        ppmChart.options.scales.y.title = { display: true, text: 'PPM' };
         ppmChart.options.scales.y.beginAtZero = true;
         try { ppmChart.options.plugins.zoom = zoomPluginOptions; } catch (e) {}
         ppmChart.update();
@@ -1299,7 +1299,7 @@
             plugins: { legend: { display: false }, tooltip: tooltipConfig, zoom: zoomPluginOptions },
             scales: {
               x: { display: true, title: { display: true, text: 'Time' }, ticks: { maxRotation: 45, autoSkip: true, maxTicksLimit: 20 } },
-              y: { display: true, title: { display: true, text: 'PPM-M-LO' }, beginAtZero: true }
+              y: { display: true, title: { display: true, text: 'PPM' }, beginAtZero: true }
             }
           }
         });

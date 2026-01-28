@@ -35,6 +35,7 @@
   const chartArea = document.getElementById('chart-area');
   const chartMeta = document.getElementById('chart-meta');
   const chartCanvas = document.getElementById('ppm-chart');
+  const pathLengthInput = document.getElementById('path-length');
 
   // Chart.js instance reference
   let ppmChart = null;
@@ -125,6 +126,61 @@
   if (toInput) {
     toInput.addEventListener('input', () => { try { updateToPreview(); } catch(e){} });
     toInput.addEventListener('change', () => { try { updateToPreview(); } catch(e){} });
+  }
+
+  // --- Load and save path length UI wiring ---
+  let __savePathDebounce = null;
+  async function loadPathLength() {
+    if (!pathLengthInput) return;
+    try {
+      const r = await fetch('/api/path_length', { cache: 'no-cache' });
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j && j.ok && typeof j.value !== 'undefined' && j.value !== null) {
+        pathLengthInput.value = String(j.value);
+      }
+    } catch (e) {
+      console.warn('Failed loading path length', e);
+    }
+  }
+
+  async function savePathLength(value) {
+    if (!pathLengthInput) return;
+    try {
+      pathLengthInput.disabled = true;
+      const body = { value: Number(value) };
+      const r = await fetch('/api/path_length', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!r.ok) {
+        const txt = await r.text().catch(()=>null);
+        console.warn('Save path length failed', r.status, txt);
+      } else {
+        // no UI noise; server will use the saved value for subsequent MQTT messages
+      }
+    } catch (e) {
+      console.warn('Save path length error', e);
+    } finally {
+      try { pathLengthInput.disabled = false; } catch (e) {}
+    }
+  }
+
+  if (pathLengthInput) {
+    pathLengthInput.addEventListener('change', (ev) => {
+      const v = ev.target.value;
+      if (!v) return;
+      try { clearTimeout(__savePathDebounce); } catch (e) {}
+      __savePathDebounce = setTimeout(() => savePathLength(v), 250);
+    });
+    // also save on blur just in case
+    pathLengthInput.addEventListener('blur', (ev) => {
+      const v = ev.target.value;
+      if (!v) return;
+      try { clearTimeout(__savePathDebounce); } catch (e) {}
+      __savePathDebounce = setTimeout(() => savePathLength(v), 120);
+    });
   }
 
   // --- Pagination and query state ---
@@ -1431,6 +1487,8 @@
     if (fromInput) fromInput.value = isoLocalString(from);
     if (toInput) toInput.value = isoLocalString(now);
     safeUpdatePreviews();
+    // load current saved path length
+    loadPathLength().catch(()=>{});
   })();
 
 })();

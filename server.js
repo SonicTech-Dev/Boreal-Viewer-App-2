@@ -7,6 +7,9 @@
 
  Additionally: /api/los now returns pagination metadata (total rows) so the frontend can
  display accurate total counts and compute total pages without scanning all pages client-side.
+
+ Added: support for a single-path-length value stored in DB (table path_length).
+ This value is used to divide all PPM values before emitting and storing.
 */
 
 require('dotenv').config();
@@ -18,7 +21,7 @@ const { exec } = require('child_process');
 const { Pool } = require('pg');
 const path = require('path');
 
-const { insertLosData, fetchLosData, countLosData } = require('./db');
+const { insertLosData, fetchLosData, countLosData, getLatestPathLength, setPathLength } = require('./db');
 
 const app = express();
 const server = http.createServer(app);
@@ -567,6 +570,31 @@ app.get('/api/remote_stations', (req, res) => {
   }
 });
 
+// Path length endpoints
+app.get('/api/path_length', async (req, res) => {
+  try {
+    const v = await getLatestPathLength();
+    return res.json({ ok: true, value: v });
+  } catch (err) {
+    console.error('GET /api/path_length error:', err);
+    return res.status(500).json({ ok: false, error: 'failed' });
+  }
+});
+
+app.post('/api/path_length', async (req, res) => {
+  try {
+    const val = req.body && typeof req.body.value !== 'undefined' ? Number(req.body.value) : NaN;
+    if (Number.isNaN(val) || val <= 0) {
+      return res.status(400).json({ ok: false, error: 'invalid value; must be positive number' });
+    }
+    const saved = await setPathLength(val);
+    return res.json({ ok: true, value: Number(saved.value) });
+  } catch (err) {
+    console.error('POST /api/path_length error:', err);
+    return res.status(500).json({ ok: false, error: 'failed' });
+  }
+});
+
 // Keep los fetch endpoint (uses fetchLosData from ./db)
 // Now returns { ok: true, rows: [...], total: <number> } where total is the total matching rows for the filters
 app.get('/api/los', async (req, res) => {
@@ -754,6 +782,20 @@ client.on('message', async (topic, payloadBuffer, packet) => {
   if (los && typeof los.los_ppm !== 'undefined' && los.los_ppm !== null) {
     const parsed = Number(los.los_ppm);
     if (!Number.isNaN(parsed)) los.los_ppm = parsed;
+  }
+
+  // --- NEW: apply path length division if configured ---
+  try {
+    const pathLen = await getLatestPathLength();
+    if (pathLen && Number(pathLen) > 0 && los && typeof los.los_ppm !== 'undefined' && los.los_ppm !== null && !Number.isNaN(Number(los.los_ppm))) {
+      const orig = Number(los.los_ppm);
+      const adjusted = Number(orig / Number(pathLen));
+      // keep numeric; do not force rounding beyond JS floats (DB insertion will coerce)
+      los.los_ppm = adjusted;
+      console.log(`Applied path length division: ${orig} / ${pathLen} => ${adjusted}`);
+    }
+  } catch (e) {
+    console.warn('Failed applying path length division:', e && e.message ? e.message : e);
   }
 
   // Build emitted object for frontend

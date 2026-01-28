@@ -20,6 +20,21 @@ const pool = new Pool({
   password: PGPASSWORD,
 });
 
+// Ensure path_length table exists (simple single-value history table)
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS path_length (
+        id SERIAL PRIMARY KEY,
+        value NUMERIC NOT NULL,
+        set_time TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+  } catch (err) {
+    console.warn('Could not ensure path_length table exists:', err && err.message ? err.message : err);
+  }
+})();
+
 /**
  * Insert a LoS reading into los_data table.
  * Accepts losObj keys in either normalized form (los_temp, los_ppm, etc)
@@ -194,9 +209,43 @@ async function countLosData(from, to, serial_number = null) {
   }
 }
 
+/**
+ * Path length helper functions
+ * - getLatestPathLength(): returns numeric value or null if none
+ * - setPathLength(value): inserts a new row with the provided numeric value
+ */
+async function getLatestPathLength() {
+  try {
+    const res = await pool.query('SELECT value FROM path_length ORDER BY set_time DESC LIMIT 1;');
+    if (res.rows && res.rows.length > 0) {
+      const v = res.rows[0].value;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  } catch (err) {
+    console.error('Error fetching latest path_length:', err && err.message ? err.message : err);
+    return null;
+  }
+}
+
+async function setPathLength(value) {
+  try {
+    const n = Number(value);
+    if (!Number.isFinite(n)) throw new Error('invalid numeric value');
+    const res = await pool.query('INSERT INTO path_length (value) VALUES ($1) RETURNING id, value, set_time;', [n]);
+    return res.rows[0] || null;
+  } catch (err) {
+    console.error('Error setting path_length:', err && err.message ? err.message : err);
+    throw err;
+  }
+}
+
 module.exports = {
   pool,
   insertLosData,
   fetchLosData,
-  countLosData
+  countLosData,
+  getLatestPathLength,
+  setPathLength
 };

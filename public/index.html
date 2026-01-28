@@ -339,6 +339,10 @@
           <label class="inline" for="graph-title">Graph Title:</label>
           <input id="graph-title" type="text" placeholder="PDF Title" style="padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit; min-width:220px;" />
 
+          <!-- NEW: Path Length input -->
+          <label class="inline" for="path-length">Path Length (Meters):</label>
+          <input id="path-length" type="number" step="any" min="0.0001" placeholder="e.g. 12" style="padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit; width:120px;" />
+
           <button id="clear-results" class="btn secondary">Clear</button>
           <button id="export-csv" class="btn" title="Export current results">CSV</button>
         </div>

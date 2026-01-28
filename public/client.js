@@ -1,9 +1,3 @@
-// client.js — live UI: receives mqtt_message, updates real-time tiles with popup details and feed.
-// Fix: prefer server-provided los object (server-side merging) over client-side recompute.
-// Label change: renamed GasFinder-PPM -> PPM
-//
-// NOTE: Popup hover removed — tiles now do nothing on hover.
-
 (function () {
   // VISUAL-ONLY STYLE: enlarge status, style dropdown
   try {
@@ -36,12 +30,17 @@
   const resultsEl = document.getElementById('results');
 
   // Tile key mappings and variants (broad set)
+  // ORDER: Temp, Rx Light, R2, HeartBeat, PPMM, Path Length (Meters), PPM
   const KEYS = [
     { keyVariants: ['LoS-Temp(c)', 'LoS-Temp', 'LoS-Temp(C)', 'lostemp', 'los_temp'], label: 'Temp (°C)', apiField: 'los_temp' },
     { keyVariants: ['LoS-Rx Light', 'LoS-RxLight', 'LoS Rx Light', 'losrxlight'], label: 'Rx Light', apiField: 'los_rx_light' },
     { keyVariants: ['LoS- R2', 'LoS-R2', 'LoS - R2', 'losr2'], label: 'R2', apiField: 'los_r2' },
     { keyVariants: ['LoS-HeartBeat', 'LoS- HeartBeat', 'losheartbeat'], label: 'HeartBeat', apiField: 'los_heartbeat' },
-    // Label updated to PPM
+    // New visual-only card: PPMM (pre-division PPM, not stored)
+    { keyVariants: ['LoS-PPMM', 'LoS- PPMM', 'los_ppmm', 'ppm_raw', 'ppm_mlo', 'ppm_pre', 'ppmm'], label: 'PPMM', apiField: 'los_ppmm' },
+    // New visual-only card: Path Length (Meters) (display current saved path length)
+    { keyVariants: [], label: 'Path Length (Meters)', apiField: 'path_length' },
+    // Label updated to PPM (post-division value provided by server)
     { keyVariants: ['LoS - PPM', 'LoS- PPM', 'LoS-PPM', 'los_ppm', 'ppm', 'losppm'], label: 'PPM', apiField: 'los_ppm' }
   ];
 
@@ -53,6 +52,9 @@
   let remoteStations = []; // array of { serial_number, ip, display, canonical }
   let selectedSerial = null; // canonical serial of currently selected station (always a station, no "All")
   const deviceStatusMap = new Map(); // canonical serial -> last status object
+
+  // Path length cache (used to reconstruct pre-division PPM if needed)
+  let currentPathLength = null;
 
   // Utility: canonicalize keys/serials for robust matching (lowercase, remove spaces/hyphens/underscores/parentheses)
   function canonicalKey(k) {
@@ -108,6 +110,7 @@
           const n = Number(info.value);
           if (!Number.isNaN(n)) displayValue = n / 100;
         }
+        // Formatting: keep two decimal places for non-integer numbers
         const display = (typeof displayValue === 'number' && !Number.isInteger(displayValue)) ? displayValue.toFixed(2) : String(displayValue);
         valueEl.textContent = display;
         metaEl.textContent = '';
@@ -453,6 +456,64 @@
     return null;
   }
 
+  // --- NEW: helpers to detect and merge integer+decimal parts for ppm from arbitrary params ---
+  function normalizeKeyForMatch(k) {
+    if (!k) return '';
+    return String(k).toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  function findPpmPartsInParams(params) {
+    let intPart;
+    let decPart;
+    for (const key of Object.keys(params || {})) {
+      const nk = normalizeKeyForMatch(key);
+      const raw = params[key];
+      const num = raw === null || raw === undefined ? NaN : Number(raw);
+      if (Number.isNaN(num)) continue;
+
+      if (nk.includes('ppm') && (nk.includes('dec') || nk.includes('decimal'))) {
+        decPart = num;
+        continue;
+      }
+
+      if (nk.includes('ppm') && (nk.includes('int') || nk.includes('mlo') || nk === 'losppm' || nk.includes('losppm'))) {
+        intPart = num;
+        continue;
+      }
+
+      // tolerant: if key has ppm but not dec, treat as integer unless we already have intPart
+      if (nk.includes('ppm') && !nk.includes('dec') && !nk.includes('decimal')) {
+        if (typeof intPart === 'undefined') intPart = num;
+      }
+
+      // also accept keys like 'ppmint' or 'ppm_mloint'
+      if ((nk.endsWith('int') || nk.endsWith('mloint')) && nk.includes('ppm')) {
+        intPart = num;
+      }
+    }
+    return { intPart, decPart };
+  }
+
+  function mergeIntAndDec(intVal, decVal) {
+    if (typeof intVal === 'undefined' || intVal === null || Number.isNaN(Number(intVal))) return undefined;
+    if (typeof decVal === 'undefined' || decVal === null || Number.isNaN(Number(decVal))) return Number(intVal);
+
+    // If integer is exactly zero, ignore decimals and return 0
+    if (Number(intVal) === 0) return 0;
+
+    let decStr = String(Math.abs(decVal)).replace(/[^0-9]/g, '');
+    if (decStr.length === 0) decStr = '0';
+    if (decStr.length > 2) decStr = decStr.slice(0, 2);
+
+    const digits = decStr.length;
+    const divisor = digits === 1 ? 100 : Math.pow(10, digits);
+    const fraction = Number(decStr) / divisor;
+
+    const sign = Number(intVal) < 0 ? -1 : 1;
+    const merged = Number(intVal) + sign * fraction;
+    return Number(merged.toFixed(2));
+  }
+
   // --- MQTT message handling ---
   socket.on('mqtt_message', (msg) => {
     const ts = msg.received_at || new Date().toISOString();
@@ -469,7 +530,7 @@
       return;
     }
 
-    // Prefer server-provided los object when available (server has already applied merging rules)
+    // Prefer server-provided los object when available (server has already applied merging rules and path-length division)
     let los = null;
     if (msg.los && typeof msg.los === 'object' && Object.keys(msg.los).length > 0) {
       // clone to avoid mutating the original
@@ -489,6 +550,20 @@
         }
       }
       if (!params || typeof params !== 'object') params = {};
+    } else {
+      // Even when server provided los, we still want to inspect original payload for pre-division ppm
+      if (msg.payload && typeof msg.payload === 'object') {
+        params = (msg.payload.params && typeof msg.payload.params === 'object') ? msg.payload.params : msg.payload;
+      } else if (typeof msg.raw === 'string') {
+        try {
+          const parsed = JSON.parse(msg.raw);
+          params = (parsed && parsed.params && typeof parsed.params === 'object') ? parsed.params : parsed;
+        } catch (e) {
+          params = {};
+        }
+      } else {
+        params = {};
+      }
     }
 
     // If server didn't provide los, build los from params and perform client-side merge detection as fallback.
@@ -547,8 +622,52 @@
       return;
     }
 
-    // Update latest using exact-match-first, then tolerant includes fallback
+    // --- SIMPLE: compute original (pre-division) PPM as post-division * path_length when possible ---
+    // This is the straightforward behavior you requested: PPMM = PPM_before_division
+    // If server provided los.los_ppm (post-division) and we have currentPathLength > 0, reconstruct original.
+    let preDivisionPpm = undefined;
+    if (los && typeof los.los_ppm !== 'undefined' && currentPathLength && Number(currentPathLength) > 0) {
+      const postDiv = Number(los.los_ppm);
+      if (!Number.isNaN(postDiv)) {
+        preDivisionPpm = postDiv * Number(currentPathLength);
+        // set directly to PPMM tile (overwrite any previous heuristics)
+        latest['PPMM'] = { value: preDivisionPpm, updated_at: ts, raw: los };
+      }
+    } else {
+      // If path length not known yet, try to detect original ppm from params (best-effort),
+      // but this will be overwritten later when path_length is fetched.
+      const { intPart, decPart } = findPpmPartsInParams(params || {});
+      const merged = mergeIntAndDec(intPart, decPart);
+      if (typeof merged !== 'undefined' && !Number.isNaN(merged)) {
+        latest['PPMM'] = { value: merged, updated_at: ts, raw: { params, los } };
+      } else {
+        // fallback: look for ppm-like keys in params or los
+        let foundRaw = null;
+        for (const k of Object.keys(params || {})) {
+          const ck = canonicalKey(k);
+          if (ck.includes('ppm') || ck.includes('ppmm') || ck.includes('ppmraw')) {
+            const n = Number(params[k]);
+            if (!Number.isNaN(n)) { foundRaw = n; break; }
+          }
+        }
+        if (foundRaw === null) {
+          for (const k of Object.keys(los || {})) {
+            const ck = canonicalKey(k);
+            if (ck.includes('ppm') || ck.includes('ppmm') || ck.includes('ppmraw')) {
+              const n = Number(los[k]);
+              if (!Number.isNaN(n)) { foundRaw = n; break; }
+            }
+          }
+        }
+        if (foundRaw !== null) latest['PPMM'] = { value: foundRaw, updated_at: ts, raw: { params, los } };
+      }
+    }
+
+    // Update latest using exact-match-first, then tolerant includes fallback for all other tiles
     KEYS.forEach(mapping => {
+      // Skip PPMM and path_length here since we've already handled PPMM (above) and path_length polled separately.
+      if (mapping.apiField === 'los_ppmm' || mapping.apiField === 'path_length') return;
+
       let found = false;
 
       // Build canonical variants for this mapping once
@@ -589,10 +708,49 @@
       }
     });
 
+    // Ensure path_length tile shows latest path length if available (visual-only)
+    if (currentPathLength !== null && currentPathLength !== undefined) {
+      latest['Path Length (Meters)'] = { value: Number(currentPathLength), updated_at: ts, raw: null };
+    }
+
+    // If we computed preDivisionPpm earlier we already set latest['PPMM']; otherwise we may have a fallback value set above.
     updateTiles();
 
     addToFeed(`[${new Date(ts).toLocaleTimeString()}] [${rawSerial}] ${msg.topic} — ${JSON.stringify(los)}`);
   });
+
+  // --- Path length polling (visual-only tile) ---
+  async function fetchPathLengthAndUpdate() {
+    try {
+      const r = await fetch('/api/path_length', { cache: 'no-cache' });
+      if (!r.ok) throw new Error('failed');
+      const j = await r.json();
+      if (j && j.ok && typeof j.value !== 'undefined' && j.value !== null) {
+        const v = Number(j.value);
+        if (!Number.isNaN(v)) {
+          currentPathLength = v;
+          latest['Path Length (Meters)'] = { value: v, updated_at: new Date().toISOString(), raw: null };
+          // Update PPMM if we currently have a post-division PPM available (reconstruct)
+          try {
+            const ppmPost = latest['PPM'] && latest['PPM'].value !== null && latest['PPM'].value !== undefined
+              ? Number(latest['PPM'].value)
+              : (latest['PPM'] && latest['PPM'].raw && latest['PPM'].raw.los_ppm ? Number(latest['PPM'].raw.los_ppm) : null);
+            if (ppmPost !== null && !Number.isNaN(ppmPost)) {
+              const reconstructed = ppmPost * v;
+              latest['PPMM'] = { value: reconstructed, updated_at: new Date().toISOString(), raw: null };
+            }
+          } catch (e) {}
+          updateTiles();
+        }
+      }
+    } catch (e) {
+      // ignore transient errors
+    }
+  }
+
+  // poll path length every 10s so the tile stays live when changed from path-length UI
+  fetchPathLengthAndUpdate().catch(()=>{});
+  setInterval(() => { fetchPathLengthAndUpdate().catch(()=>{}); }, 10000);
 
   // Initial render
   createTiles();
